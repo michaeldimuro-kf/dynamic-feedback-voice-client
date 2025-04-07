@@ -41,6 +41,9 @@ const PDFViewer = () => {
   // Create canvas ref
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  
+  // Track active render task to cancel if needed
+  const activeRenderTaskRef = useRef<any>(null);
 
   // Start narration of the PDF
   const startNarration = async () => {
@@ -174,9 +177,21 @@ const PDFViewer = () => {
 
   // Load the default PDF on component mount
   useEffect(() => {
+    let mounted = true;
+    
     if (!pdfState.pdfDoc) {
       loadDefaultPDF();
     }
+    
+    // Cleanup any active render task when component unmounts
+    return () => {
+      mounted = false;
+      if (activeRenderTaskRef.current) {
+        console.log("Cancelling active render task on unmount");
+        activeRenderTaskRef.current.cancel();
+        activeRenderTaskRef.current = null;
+      }
+    };
   }, []);
 
   // Load default PDF
@@ -271,6 +286,22 @@ const PDFViewer = () => {
   const renderPage = useCallback(async (pageNum: number) => {
     if (!pdfState.pdfDoc) return;
     
+    // Check if we're already rendering this page
+    if (activeRenderTaskRef.current) {
+      const currentTaskPageNum = activeRenderTaskRef.current.pageNumber;
+      
+      // If we're already rendering this exact page, don't start a new render
+      if (currentTaskPageNum === pageNum) {
+        console.log(`Already rendering page ${pageNum}, skipping duplicate render request`);
+        return;
+      }
+      
+      // Otherwise cancel the current task before starting a new one
+      console.log(`Cancelling previous render task for page ${currentTaskPageNum}`);
+      activeRenderTaskRef.current.cancel();
+      activeRenderTaskRef.current = null;
+    }
+    
     try {
       setIsLoading(true);
       
@@ -292,9 +323,12 @@ const PDFViewer = () => {
         return;
       }
       
-      // Reset the canvas
+      // Clear any previous transforms and content
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Reset any existing canvas transforms
+      canvas.style.transform = 'none';
       
       // Use device pixel ratio for high resolution displays
       const pixelRatio = window.devicePixelRatio || 1;
@@ -305,7 +339,7 @@ const PDFViewer = () => {
       // Get container dimensions with minimal padding
       const containerWidth = container.clientWidth - (isMobile ? 16 : 64);
       
-      // Get the viewport at scale 1 (let PDF.js handle orientation)
+      // Create a clean viewport with natural orientation
       const defaultViewport = page.getViewport({ scale: 1 });
       
       // Calculate scale based on container width
@@ -314,7 +348,9 @@ const PDFViewer = () => {
       // Apply different multipliers for mobile and desktop
       scale *= isMobile ? 0.95 : 0.65;
       
-      // Create the viewport with the calculated scale
+      console.log(`Rendering page ${pageNum} with scale ${scale}`);
+      
+      // Create viewport with calculated scale
       const viewport = page.getViewport({ scale });
       
       // Store the scale for reference
@@ -324,11 +360,10 @@ const PDFViewer = () => {
       canvas.width = Math.floor(viewport.width * pixelRatio);
       canvas.height = Math.floor(viewport.height * pixelRatio);
       
-      // Apply auto-sizing with appropriate aspect ratio
+      // Apply styling to the canvas
       canvas.style.width = 'auto';
       canvas.style.height = 'auto';
       canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
-      canvas.style.transform = 'none'; // Reset any transforms
       
       // For mobile, make sure we don't overflow
       if (isMobile) {
@@ -340,53 +375,135 @@ const PDFViewer = () => {
         canvas.style.margin = '0 auto';
       }
       
-      // Apply pixel ratio scale
+      // Apply pixel ratio scaling
       context.scale(pixelRatio, pixelRatio);
       
       // High quality rendering settings
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = 'high';
       
-      // Render the page
+      // Create a new render task
       const renderTask = page.render({
         canvasContext: context,
         viewport: viewport
       });
       
+      // Store the page number with the render task for better cancellation logic
+      renderTask.pageNumber = pageNum;
+      
+      // Store the active render task so we can cancel it if needed
+      activeRenderTaskRef.current = renderTask;
+      
+      // Wait for rendering to complete
       await renderTask.promise;
+      
+      // Clear the active render task reference once complete
+      activeRenderTaskRef.current = null;
+      
+      // Detect if we're on iOS
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      
+      // Apply special mobile handling if needed
+      if (isMobile) {
+        console.log("Applying mobile-specific adjustments");
+        canvas.style.maxWidth = '95%';
+        
+        if (isIOS) {
+          console.log("iOS device detected - applying additional fixes");
+          canvas.style.maxHeight = '90vh';
+          canvas.style.objectFit = 'contain';
+        }
+      }
+      
       setIsLoading(false);
       
     } catch (error) {
-      console.error('Error rendering PDF page:', error);
+      // Check if this is a cancelled render task
+      if (
+        error instanceof Error && 
+        (error.message === 'Rendering cancelled' || 
+         error.name === 'RenderingCancelledException')
+      ) {
+        console.log(`Render cancelled for page ${pageNum}`);
+      } else {
+        console.error('Error rendering PDF page:', error);
+      }
+      
       setIsLoading(false);
     }
   }, [pdfState.pdfDoc, setBaseScale]);
+  
+  // Re-render when page number changes - with improved error handling
+  useEffect(() => {
+    if (pdfState.pdfDoc && pdfState.pageNum > 0) {
+      // Use a more intelligent approach for page changes
+      // If we're already rendering this page, don't interrupt
+      if (activeRenderTaskRef.current && activeRenderTaskRef.current.pageNumber === pdfState.pageNum) {
+        console.log(`Page change detected but already rendering page ${pdfState.pageNum}`);
+        return;
+      }
+      
+      // If we're rendering a different page, cancel it
+      if (activeRenderTaskRef.current) {
+        console.log(`Cancelling render task due to page change from ${activeRenderTaskRef.current.pageNumber} to ${pdfState.pageNum}`);
+        activeRenderTaskRef.current.cancel();
+        activeRenderTaskRef.current = null;
+      }
+      
+      // A small delay helps prevent race conditions
+      const timer = setTimeout(() => {
+        if (!activeRenderTaskRef.current) {
+          renderPage(pdfState.pageNum);
+        }
+      }, 50);
+      
+      return () => {
+        clearTimeout(timer);
+      };
+    }
+  }, [pdfState.pdfDoc, pdfState.pageNum, pdfState.forceRender, renderPage]);
 
   // Handle container resize
   useEffect(() => {
     if (!containerRef.current || !pdfState.pdfDoc) return;
     
-    const resizeObserver = new ResizeObserver(() => {
-      if (pdfState.pdfDoc && pdfState.pageNum > 0) {
-        console.log("Container resized, re-rendering PDF");
-        renderPage(pdfState.pageNum);
-      }
-    });
+    // Debounce the resize handling to prevent too many re-renders
+    let resizeTimeout: any = null;
     
+    const handleResize = () => {
+      // Clear any existing timeout
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+      }
+      
+      // Set a new timeout to debounce the resize event
+      resizeTimeout = setTimeout(() => {
+        if (pdfState.pdfDoc && pdfState.pageNum > 0) {
+          console.log("Container resized, re-rendering PDF");
+          
+          // Don't cancel existing renders for resize events
+          // Only proceed with a new render if there's no active rendering
+          if (!activeRenderTaskRef.current) {
+            renderPage(pdfState.pageNum);
+          } else {
+            console.log("Skipping resize-triggered render - render already in progress");
+          }
+        }
+      }, 350); // Increase wait time to reduce chances of conflict
+    };
+    
+    const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(containerRef.current);
     
     return () => {
       resizeObserver.disconnect();
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+      }
     };
   }, [pdfState.pdfDoc, pdfState.pageNum, renderPage]);
   
-  // Re-render when page number changes
-  useEffect(() => {
-    if (pdfState.pdfDoc && pdfState.pageNum > 0) {
-      renderPage(pdfState.pageNum);
-    }
-  }, [pdfState.pdfDoc, pdfState.pageNum, pdfState.forceRender, renderPage]);
-
   // Page navigation with narration support
   const handleNextPage = () => {
     if (pdfState.pageNum < pdfState.pageCount) {
@@ -396,6 +513,12 @@ const PDFViewer = () => {
       // Stop any current audio processing first
       if (audioState.isNarrating && currentAudio) {
         stopAudio();
+      }
+      
+      // Cancel any ongoing rendering first
+      if (activeRenderTaskRef.current) {
+        activeRenderTaskRef.current.cancel();
+        activeRenderTaskRef.current = null;
       }
       
       // Update the page number
@@ -426,6 +549,12 @@ const PDFViewer = () => {
       // Stop any current audio processing first
       if (audioState.isNarrating && currentAudio) {
         stopAudio();
+      }
+      
+      // Cancel any ongoing rendering first
+      if (activeRenderTaskRef.current) {
+        activeRenderTaskRef.current.cancel();
+        activeRenderTaskRef.current = null;
       }
       
       // Update the page number
