@@ -1,0 +1,89 @@
+/* Font settings */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    @apply font-sans text-neutral-800 bg-neutral-50 antialiased;
+    min-height: 100vh;
+    min-height: -webkit-fill-available;
+  }
+  
+  html, body, #root {
+    height: 100%;
+  }
+  
+  /* Better button defaults */
+  button {
+    @apply cursor-pointer select-none focus:outline-none;
+  }
+  
+  /* Better focus styles */
+  :focus-visible {
+    @apply outline-primary-500 outline-2 outline-offset-2;
+  }
+  
+  /* Remove default styles for mobile */
+  input,
+  textarea,
+  button,
+  select {
+    @apply appearance-none;
+    font-family: inherit;
+  }
+}
+
+@layer components {
+  .button {
+    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-all;
+  }
+  
+  .button-primary {
+    @apply bg-primary-600 text-white hover:bg-primary-700 active:bg-primary-800;
+  }
+  
+  .button-secondary {
+    @apply bg-white text-neutral-800 border border-neutral-300 hover:bg-neutral-50 active:bg-neutral-100;
+  }
+  
+  .card {
+    @apply bg-white rounded-xl shadow-card p-4;
+  }
+  
+  .input {
+    @apply w-full px-3 py-2 rounded-lg border border-neutral-300 focus:ring-2 focus:ring-primary-500 focus:border-primary-500;
+  }
+}
+
+/* Custom scrollbar for webkit browsers */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-neutral-300 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-neutral-400;
+}
+
+/* Mobile height fixes */
+@supports (-webkit-touch-callout: none) {
+  .min-h-screen {
+    min-height: -webkit-fill-available;
+  }
+}

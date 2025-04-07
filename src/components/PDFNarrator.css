@@ -1,0 +1,318 @@
+/* PDFNarrator Component Styles */
+.pdf-narrator {
+  position: relative;
+  margin-top: 20px;
+  padding: 15px;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.narrator-controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.primary {
+  background-color: #0d6efd;
+  color: white;
+}
+
+.primary:hover:not(:disabled) {
+  background-color: #0b5ed7;
+}
+
+.danger {
+  background-color: #dc3545;
+  color: white;
+}
+
+.danger:hover:not(:disabled) {
+  background-color: #c82333;
+}
+
+.pause-button, .resume-button {
+  background-color: #6c757d;
+  color: white;
+}
+
+.pause-button:hover:not(:disabled), .resume-button:hover:not(:disabled) {
+  background-color: #5a6268;
+}
+
+.narrator-status {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.narrator-status p {
+  margin: 0;
+}
+
+.processing {
+  background-color: #fff3cd;
+  color: #856404;
+}
+
+.active {
+  background-color: #d1e7dd;
+  color: #0f5132;
+}
+
+.error {
+  background-color: #f8d7da;
+  color: #842029;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.error svg {
+  flex-shrink: 0;
+}
+
+.error p {
+  flex-grow: 1;
+}
+
+.retry-button {
+  background-color: #842029;
+  color: white;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.retry-button:hover {
+  background-color: #6e1a22;
+}
+
+.loading-indicator {
+  width: 16px;
+  height: 16px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  margin-right: 10px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  color: #6c757d;
+}
+
+/* Debug panel styling */
+.debug-panel {
+  margin-top: 20px;
+  border-top: 1px solid #dee2e6;
+  padding-top: 15px;
+}
+
+.debug-toggle {
+  background-color: #6c757d;
+  color: white;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.debug-toggle:hover {
+  background-color: #5a6268;
+}
+
+.debug-info {
+  margin-top: 10px;
+  padding: 10px;
+  background-color: #e9ecef;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.debug-info h4 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 14px;
+  color: #495057;
+}
+
+.debug-info table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.debug-info td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #ced4da;
+}
+
+.debug-info td:first-child {
+  font-weight: 500;
+  width: 40%;
+}
+
+.error-message {
+  color: #dc3545;
+}
+
+/* Add styles for the new debug actions section */
+.debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 15px;
+  padding-top: 10px;
+  border-top: 1px dashed #ced4da;
+}
+
+.debug-actions button {
+  background-color: #6c757d;
+  color: white;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.debug-actions button:hover:not(:disabled) {
+  background-color: #5a6268;
+}
+
+.debug-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Make buttons more prominent on smaller screens */
+@media (max-width: 768px) {
+  .narrator-controls {
+    flex-direction: column;
+  }
+  
+  .button {
+    width: 100%;
+    padding: 12px;
+  }
+}
+
+/* Debug panel styles */
+.debug-panel {
+  margin-top: 20px;
+  border-top: 1px dashed #ccc;
+  padding-top: 10px;
+}
+
+.debug-toggle {
+  background-color: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #666;
+}
+
+.debug-toggle:hover {
+  background-color: #e5e5e5;
+}
+
+.debug-info {
+  margin-top: 10px;
+  padding: 10px;
+  background-color: #f9f9f9;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.debug-info h4 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  color: #333;
+  font-size: 14px;
+}
+
+.debug-info table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.debug-info td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.debug-info td:first-child {
+  font-weight: bold;
+  width: 40%;
+}
+
+.debug-info .error-message {
+  color: #f74a4a;
+  max-width: 300px;
+  overflow-wrap: break-word;
+  font-size: 11px;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px;
+  padding: 8px 12px;
+  background-color: #e6f7ff;
+  border-radius: 4px;
+  border-left: 4px solid #4a9cf7;
+}
+
+.connection-status .loading-indicator {
+  border-color: #4a9cf7;
+  border-top-color: transparent;
+  width: 14px;
+  height: 14px;
+}
+
+.connection-status span {
+  font-size: 14px;
+  color: #333;
+} 

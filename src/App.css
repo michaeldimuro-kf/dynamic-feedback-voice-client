@@ -1,0 +1,299 @@
+/* 
+  Most styles have been migrated to Tailwind classes.
+  This file contains only essential styles that can't be achieved with Tailwind.
+*/
+
+/* PDF container styles */
+.pdf-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  background-color: white;
+}
+
+/* PDF canvas styles */
+canvas.pdf-canvas {
+  max-width: 100%;
+  height: auto;
+  width: auto;
+  margin: 0 auto;
+  display: block;
+  background-color: white;
+}
+
+/* Desktop PDF adjustments */
+@media (min-width: 768px) {
+  .pdf-container {
+    padding: 16px;
+    background-color: #f8f9fa;
+    border-radius: 8px;
+  }
+  
+  canvas.pdf-canvas {
+    max-width: 75%; /* Significantly reduce the width on desktop to fix aspect ratio */
+    max-height: calc(100vh - 150px);
+    /* Use both width and height constraints to maintain aspect ratio */
+    object-fit: contain;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+  }
+}
+
+/* Animation helpers for transitions */
+.fade-enter {
+  opacity: 0;
+}
+.fade-enter-active {
+  opacity: 1;
+  transition: opacity 300ms ease-in;
+}
+.fade-exit {
+  opacity: 1;
+}
+.fade-exit-active {
+  opacity: 0;
+  transition: opacity 300ms ease-out;
+}
+
+/* Accessibility helper */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Mobile layout styling */
+.mobile-view-layout {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Transcript header styling */
+.transcript-header {
+  background-color: white;
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid #e5e7eb;
+  box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.transcript-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.transcript-header.mobile {
+  cursor: pointer;
+}
+
+/* Arrow icon animation */
+.arrow-icon {
+  width: 24px;
+  height: 24px;
+  transition: transform 0.3s ease;
+}
+
+.arrow-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.arrow-icon.open {
+  transform: rotate(180deg);
+}
+
+/* Mobile transcript panel */
+.mobile-transcript-panel {
+  height: 0;
+  overflow: hidden;
+  transition: height 0.3s ease;
+  background-color: white;
+  border-top: 1px solid #e5e7eb;
+}
+
+.mobile-transcript-panel.open {
+  height: 40vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch; /* For smoother scrolling on iOS */
+}
+
+/* Add a subtle scrollbar indicator for the transcript panel */
+.mobile-transcript-panel.open:after {
+  content: '';
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  width: 0.25rem;
+  height: 2rem;
+  border-radius: 1rem;
+  background-color: rgba(0, 0, 0, 0.1);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Show scrollbar indicator when there's enough content */
+.mobile-transcript-panel.open.scrollable:after {
+  opacity: 1;
+}
+
+/* Audio recorder container */
+.audio-recorder-container {
+  background-color: rgba(255, 255, 255, 0.95);
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid #e5e7eb;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+/* Desktop audio recorder */
+.desktop-audio-recorder {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .desktop-audio-recorder {
+    display: block;
+    background-color: white;
+    padding: 1rem;
+    border-radius: 0.75rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    margin: 0.5rem 1rem;
+  }
+  
+  .mobile-view-layout {
+    display: none;
+  }
+  
+  /* Keep desktop audio recorder container padding normal */
+  .audio-recorder-container {
+    padding: 0.75rem;
+    backdrop-filter: none;
+  }
+}
+
+/* More compact styles for smaller screens */
+@media (max-width: 640px) {
+  .audio-recorder-container {
+    padding: 0.625rem 0.75rem 1.25rem 0.75rem;
+    height: 5.5rem;
+    z-index: 30;
+  }
+  
+  .transcript-header {
+    padding: 0.625rem 0.875rem;
+  }
+  
+  .transcript-header h2 {
+    font-size: 0.9375rem;
+  }
+  
+  /* Adjust main content spacing to account for the larger audio recorder */
+  main {
+    margin-bottom: 5.5rem !important;
+  }
+  
+  main.chat-open {
+    margin-bottom: calc(5.5rem + 40vh) !important;
+  }
+}
+
+/* Blurred background effect for when transcript is open on mobile */
+.blurred {
+  filter: blur(2px);
+  opacity: 0.7;
+  transition: all 0.3s ease;
+}
+
+/* Loading overlay */
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.8);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(59, 130, 246, 0.2);
+  border-radius: 50%;
+  border-top-color: #3b82f6;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Microphone button fixed positioning */
+.mic-button-container {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 56px; /* Slightly larger than the button itself */
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+/* Ensure microphone button stays centered */
+.mic-button {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 56px;
+  height: 56px;
+}
+
+/* Desktop microphone button */
+@media (min-width: 768px) {
+  .mic-button-container.desktop {
+    width: 64px;
+    height: 64px;
+  }
+  
+  .mic-button.desktop {
+    width: 64px;
+    height: 64px;
+  }
+}

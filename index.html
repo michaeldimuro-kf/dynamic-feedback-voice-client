@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0EA5E9" />
+    <meta name="description" content="Live Feedback application with PDF narration and voice chat" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Live Feedback</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- We're now loading Inter font via @fontsource/inter in main.tsx -->
+    <!-- Add MediaRecorder polyfill for Safari and older browsers -->
+    <script src="https://cdn.jsdelivr.net/npm/audio-recorder-polyfill@0.4.1/dist/audio-recorder-polyfill.min.js"></script>
+    <script>
+      // Apply polyfill if needed
+      if (!window.MediaRecorder) {
+        window.MediaRecorder = AudioRecorderPolyfill;
+        console.log('Using MediaRecorder polyfill');
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
