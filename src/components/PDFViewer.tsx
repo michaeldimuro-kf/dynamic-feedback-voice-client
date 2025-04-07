@@ -168,20 +168,209 @@ const PDFViewer = () => {
     stopAudio();
   };
 
+  // Create a memoized rendering function that preserves the scaling
+  const renderPage = useCallback(async (pageNum: number) => {
+    if (!pdfState.pdfDoc) return;
+    
+    try {
+      setIsLoading(true);
+      
+      // Get the page
+      const page = await pdfState.pdfDoc.getPage(pageNum);
+      
+      // Get the canvas and context
+      const canvas = canvasRef.current;
+      const container = containerRef.current;
+      
+      if (!canvas || !container) {
+        setIsLoading(false);
+        return;
+      }
+      
+      const context = canvas.getContext('2d');
+      if (!context) {
+        setIsLoading(false);
+        return;
+      }
+      
+      // Reset the canvas completely - critical for preventing scaling issues
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      
+      // Use device pixel ratio for high resolution displays
+      const pixelRatio = window.devicePixelRatio || 1;
+      
+      // Check if we're on mobile or desktop
+      const isMobile = window.innerWidth < 768;
+      
+      // Get container dimensions with minimal padding
+      const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
+      
+      // Get the default viewport at scale 1 - let PDF.js determine the default rotation
+      // This ensures we respect the document's native orientation
+      const defaultViewport = page.getViewport({ scale: 1 });
+      
+      // Extract original dimensions
+      const origPageWidth = defaultViewport.width;
+      const origPageHeight = defaultViewport.height;
+      const origAspectRatio = origPageWidth / origPageHeight;
+      
+      // ALWAYS scale based on width to maintain aspect ratio
+      let scale = containerWidth / origPageWidth;
+      
+      // Apply different multipliers for mobile and desktop
+      scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
+      
+      console.log(`Rendering page ${pageNum} with scale ${scale} (container width: ${containerWidth}, is mobile: ${isMobile}, aspect ratio: ${origAspectRatio})`);
+      
+      // Create the viewport with the calculated scale, with no explicit rotation
+      // This ensures PDF.js uses the document's internal rotation values
+      const viewport = page.getViewport({ scale });
+      
+      // Store the scale for reference
+      setBaseScale(scale);
+      
+      // Clear the canvas
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Set the canvas dimensions for internal rendering (accounting for pixel ratio)
+      canvas.width = Math.floor(viewport.width * pixelRatio);
+      canvas.height = Math.floor(viewport.height * pixelRatio);
+      
+      // Apply auto-sizing with appropriate aspect ratio
+      canvas.style.width = 'auto';
+      canvas.style.height = 'auto';
+      canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+      
+      // For mobile, make sure we don't overflow
+      if (isMobile) {
+        canvas.style.maxWidth = '100%';
+        canvas.style.maxHeight = `calc(100vh - 150px)`;
+      } else {
+        // For desktop, limit width to avoid excess whitespace
+        canvas.style.maxWidth = '80%';
+        canvas.style.margin = '0 auto';
+      }
+      
+      // Apply the pixel ratio scale
+      context.scale(pixelRatio, pixelRatio);
+      
+      // High quality rendering settings
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      
+      // Render the page
+      const renderTask = page.render({
+        canvasContext: context,
+        viewport: viewport
+      });
+      
+      await renderTask.promise;
+      setIsLoading(false);
+      
+    } catch (error) {
+      console.error('Error rendering PDF page:', error);
+      setIsLoading(false);
+    }
+  }, [pdfState.pdfDoc, setBaseScale]);
+
+  // Function to specifically handle first page loading
+  const ensureCorrectOrientation = useCallback(async () => {
+    if (!pdfState.pdfDoc || pdfState.pageNum !== 1) return;
+    
+    try {
+      // Only run this fix once per PDF load
+      if (hasFixedFirstPage) return;
+      
+      // Get the first page
+      const page = await pdfState.pdfDoc.getPage(1);
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext('2d');
+      const container = containerRef.current;
+      
+      if (!canvas || !context || !container) return;
+      
+      // Reset transformations
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      
+      // Clear the canvas
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Check if we're on mobile or desktop
+      const isMobile = window.innerWidth < 768;
+      
+      // Get container dimensions with minimal padding
+      const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
+      
+      // Get the default viewport at scale 1 - let PDF.js handle rotation
+      const defaultViewport = page.getViewport({ scale: 1 });
+      
+      // Extract original dimensions
+      const origPageWidth = defaultViewport.width;
+      const origPageHeight = defaultViewport.height;
+      const origAspectRatio = origPageWidth / origPageHeight;
+      
+      // ALWAYS scale based on width to maintain aspect ratio
+      let scale = containerWidth / origPageWidth;
+      
+      // Apply different multipliers for mobile and desktop
+      scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
+      
+      console.log(`First page orientation with scale ${scale} (aspect ratio: ${origAspectRatio})`);
+      
+      // Create the viewport with the calculated scale only
+      const viewport = page.getViewport({ scale });
+      
+      // Set the canvas dimensions for internal rendering (accounting for pixel ratio)
+      const pixelRatio = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(viewport.width * pixelRatio);
+      canvas.height = Math.floor(viewport.height * pixelRatio);
+      
+      // Apply auto-sizing with appropriate aspect ratio
+      canvas.style.width = 'auto';
+      canvas.style.height = 'auto';
+      canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+      
+      // For mobile, make sure we don't overflow
+      if (isMobile) {
+        canvas.style.maxWidth = '100%';
+        canvas.style.maxHeight = `calc(100vh - 150px)`;
+      } else {
+        // For desktop, limit width to avoid excess whitespace
+        canvas.style.maxWidth = '80%';
+        canvas.style.margin = '0 auto';
+      }
+      
+      // Apply the pixel ratio scale
+      context.scale(pixelRatio, pixelRatio);
+      
+      // High quality rendering settings
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      
+      // Render the page
+      const renderTask = page.render({
+        canvasContext: context,
+        viewport: viewport
+      });
+      
+      await renderTask.promise;
+      setHasFixedFirstPage(true);
+    } catch (error) {
+      console.error('Error in first page rendering:', error);
+    }
+  }, [pdfState.pdfDoc, pdfState.pageNum, hasFixedFirstPage]);
+
   // Load a PDF from a URL
   const loadPDF = useCallback(async (url: string) => {
     setLoadState('loading');
     setPdfError(null);
     
     try {
-      // Load the PDF document with proper configuration
+      // Use default PDF.js options with necessary configuration
       const loadingTask = pdfjsLib.getDocument({
         url,
         cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
-        cMapPacked: true,
-        disableAutoFetch: true,
-        disableStream: false,
-        disableRange: false,
+        cMapPacked: true
       });
       
       const pdfDoc = await loadingTask.promise;
@@ -234,14 +423,11 @@ const PDFViewer = () => {
           const data = await response.arrayBuffer();
           console.log("PDF data fetched successfully, size:", data.byteLength);
           
-          // Add cMapUrl and disableAutoFetch options to ensure proper rendering
+          // Simplify loading options - only use essential parameters
           const loadingOptions = {
             data,
             cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
-            cMapPacked: true,
-            disableAutoFetch: true,
-            disableStream: false,
-            disableRange: false,
+            cMapPacked: true
           };
           
           console.log("Creating PDF document from data");
@@ -278,10 +464,7 @@ const PDFViewer = () => {
             const loadingOptions = {
               data: altData,
               cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
-              cMapPacked: true,
-              disableAutoFetch: true,
-              disableStream: false,
-              disableRange: false,
+              cMapPacked: true
             };
             
             const pdfDoc = await pdfjsLib.getDocument(loadingOptions).promise;
@@ -313,224 +496,6 @@ const PDFViewer = () => {
       setLoadState('error');
     }
   };
-
-  // Create a memoized rendering function that preserves the scaling
-  const renderPage = useCallback(async (pageNum: number) => {
-    if (!pdfState.pdfDoc) return;
-    
-    try {
-      setIsLoading(true);
-      
-      // Get the page
-      const page = await pdfState.pdfDoc.getPage(pageNum);
-      
-      // Get the canvas and context
-      const canvas = canvasRef.current;
-      const container = containerRef.current;
-      
-      if (!canvas || !container) {
-        setIsLoading(false);
-        return;
-      }
-      
-      const context = canvas.getContext('2d');
-      if (!context) {
-        setIsLoading(false);
-        return;
-      }
-      
-      // Reset the canvas completely - critical for preventing scaling issues
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      
-      // Use device pixel ratio for high resolution displays
-      const pixelRatio = window.devicePixelRatio || 1;
-      
-      // Check if we're on mobile or desktop
-      const isMobile = window.innerWidth < 768;
-      
-      // Get container dimensions with minimal padding
-      const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
-      
-      // Get PDF page rotation and fix it if needed
-      // First check if the page has a rotation value in its internal structure
-      let rotation = 0;
-      try {
-        // Try to access the rotation property from the page object
-        const pageRotation = page.rotate || 0;
-        // Normalize rotation to 0, 90, 180, or 270 degrees
-        rotation = ((pageRotation % 360) + 360) % 360;
-        console.log(`Page ${pageNum} has native rotation of ${rotation} degrees`);
-      } catch (e) {
-        console.log(`Could not detect rotation for page ${pageNum}, defaulting to 0 degrees`);
-        rotation = 0;
-      }
-      
-      // Get the default viewport at scale 1 with proper rotation
-      const defaultViewport = page.getViewport({ scale: 1, rotation: rotation });
-      
-      // Extract original dimensions
-      const origPageWidth = defaultViewport.width;
-      const origPageHeight = defaultViewport.height;
-      const origAspectRatio = origPageWidth / origPageHeight;
-      
-      // ALWAYS scale based on width to maintain aspect ratio
-      let scale = containerWidth / origPageWidth;
-      
-      // Apply different multipliers for mobile and desktop
-      scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
-      
-      console.log(`Rendering page ${pageNum} with scale ${scale}, rotation ${rotation} degrees (container width: ${containerWidth}, is mobile: ${isMobile}, aspect ratio: ${origAspectRatio})`);
-      
-      // Create the viewport with the calculated scale and correct rotation
-      const viewport = page.getViewport({ scale, rotation: rotation });
-      
-      // Store the scale for reference
-      setBaseScale(scale);
-      
-      // Clear the canvas
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Set the canvas dimensions for internal rendering (accounting for pixel ratio)
-      canvas.width = Math.floor(viewport.width * pixelRatio);
-      canvas.height = Math.floor(viewport.height * pixelRatio);
-      
-      // Apply auto-sizing with appropriate aspect ratio
-      canvas.style.width = 'auto';
-      canvas.style.height = 'auto';
-      canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
-      
-      // For mobile, make sure we don't overflow
-      if (isMobile) {
-        canvas.style.maxWidth = '100%';
-        canvas.style.maxHeight = `calc(100vh - 150px)`;
-      } else {
-        // For desktop, limit width to avoid excess whitespace
-        canvas.style.maxWidth = '80%';
-        canvas.style.margin = '0 auto';
-      }
-      
-      // Apply the pixel ratio scale
-      context.scale(pixelRatio, pixelRatio);
-      
-      // High quality rendering settings
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = 'high';
-      
-      // Render the page
-      const renderTask = page.render({
-        canvasContext: context,
-        viewport: viewport
-      });
-      
-      await renderTask.promise;
-      setIsLoading(false);
-      
-    } catch (error) {
-      console.error('Error rendering PDF page:', error);
-      setIsLoading(false);
-    }
-  }, [pdfState.pdfDoc, setBaseScale]);
-
-  // Function to specifically handle first page rotation issues
-  const ensureCorrectOrientation = useCallback(async () => {
-    if (!pdfState.pdfDoc || pdfState.pageNum !== 1) return;
-    
-    try {
-      // Only run this fix once per PDF load
-      if (hasFixedFirstPage) return;
-      
-      // Get the first page
-      const page = await pdfState.pdfDoc.getPage(1);
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext('2d');
-      const container = containerRef.current;
-      
-      if (!canvas || !context || !container) return;
-      
-      // Reset transformations
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      
-      // Clear the canvas
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Check if we're on mobile or desktop
-      const isMobile = window.innerWidth < 768;
-      
-      // Get container dimensions with minimal padding
-      const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
-      
-      // Get PDF page rotation and fix it if needed
-      // First check if the page has a rotation value in its internal structure
-      let rotation = 0;
-      try {
-        // Try to access the rotation property from the page object
-        const pageRotation = page.rotate || 0;
-        // Normalize rotation to 0, 90, 180, or 270 degrees
-        rotation = ((pageRotation % 360) + 360) % 360;
-        console.log(`First page has native rotation of ${rotation} degrees`);
-      } catch (e) {
-        console.log('Could not detect rotation for first page, defaulting to 0 degrees');
-        rotation = 0;
-      }
-      
-      // Get the default viewport at scale 1 with proper rotation
-      const defaultViewport = page.getViewport({ scale: 1, rotation: rotation });
-      
-      // Extract original dimensions
-      const origPageWidth = defaultViewport.width;
-      const origPageHeight = defaultViewport.height;
-      const origAspectRatio = origPageWidth / origPageHeight;
-      
-      // ALWAYS scale based on width to maintain aspect ratio
-      let scale = containerWidth / origPageWidth;
-      
-      // Apply different multipliers for mobile and desktop
-      scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
-      
-      console.log(`First page orientation fix with scale ${scale}, rotation ${rotation} degrees (aspect ratio: ${origAspectRatio})`);
-      
-      // Create the viewport with the calculated scale and proper rotation
-      const viewport = page.getViewport({ scale, rotation: rotation });
-      
-      // Set the canvas dimensions for internal rendering (accounting for pixel ratio)
-      const pixelRatio = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(viewport.width * pixelRatio);
-      canvas.height = Math.floor(viewport.height * pixelRatio);
-      
-      // Apply auto-sizing with appropriate aspect ratio
-      canvas.style.width = 'auto';
-      canvas.style.height = 'auto';
-      canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
-      
-      // For mobile, make sure we don't overflow
-      if (isMobile) {
-        canvas.style.maxWidth = '100%';
-        canvas.style.maxHeight = `calc(100vh - 150px)`;
-      } else {
-        // For desktop, limit width to avoid excess whitespace
-        canvas.style.maxWidth = '80%';
-        canvas.style.margin = '0 auto';
-      }
-      
-      // Apply the pixel ratio scale
-      context.scale(pixelRatio, pixelRatio);
-      
-      // High quality rendering settings
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = 'high';
-      
-      // Render the page
-      const renderTask = page.render({
-        canvasContext: context,
-        viewport: viewport
-      });
-      
-      await renderTask.promise;
-      setHasFixedFirstPage(true);
-    } catch (error) {
-      console.error('Error in orientation fix:', error);
-    }
-  }, [pdfState.pdfDoc, pdfState.pageNum, hasFixedFirstPage]);
 
   // Handle container resize
   useEffect(() => {
