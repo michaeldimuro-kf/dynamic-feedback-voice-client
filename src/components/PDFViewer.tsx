@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import useStore from '../store/useStore';
 import * as pdfjsLib from 'pdfjs-dist';
 // Import the worker directly (Vite will handle this correctly)
@@ -37,8 +37,6 @@ const PDFViewer = () => {
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [hasFixedFirstPage, setHasFixedFirstPage] = useState<boolean>(false);
-  const [lastNarratedPage, setLastNarratedPage] = useState<number>(0);
 
   // Create canvas ref
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -52,7 +50,6 @@ const PDFViewer = () => {
     const audioState = useStore.getState().audioState;
     if (audioState.isProcessing || audioState.isRecording) {
       console.error("[PDFViewer] Cannot start narration while voice chat is active");
-      // Show an error or notification to the user here if needed
       return;
     }
     
@@ -62,44 +59,37 @@ const PDFViewer = () => {
       stopAudio();
     }
     
-    // Unlock audio - try multiple approaches for different browsers
+    // Try to unlock audio context
     try {
       console.log("[PDFViewer] Attempting to unlock audio context...");
-      
-      // Method 1: Standard AudioContext
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      
-      // Method 2: Oscillator for Chrome/Safari
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
-      gainNode.gain.value = 0.01; // Very quiet
+      gainNode.gain.value = 0.01;
       oscillator.connect(gainNode);
       gainNode.connect(audioContext.destination);
       oscillator.start();
       oscillator.stop(audioContext.currentTime + 0.001);
       
-      // Method 3: Silent audio element for iOS
       const silentAudio = new Audio();
       silentAudio.src = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV6urq6urq6urq6urq6urq6urq6urq6v////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAASDs90hvAAAAAAAAAAAAAAAAAAAA//MUZAAAAAGkAAAAAAAAA0gAAAAATEFN//MUZAMAAAGkAAAAAAAAA0gAAAAARTMu//MUZAYAAAGkAAAAAAAAA0gAAAAAOTku//MUZAkAAAGkAAAAAAAAA0gAAAAANVVV";
       const silentPlayPromise = silentAudio.play();
       if (silentPlayPromise) {
         silentPlayPromise.catch(err => {
-          console.log("[PDFViewer] Silent audio plaback failed:", err);
+          console.log("[PDFViewer] Silent audio playback failed:", err);
         });
       }
       
       console.log("[PDFViewer] Audio context unlocked");
     } catch (err) {
       console.error("[PDFViewer] Error unlocking audio:", err);
-      // Continue even if this fails - the audio handler will try again
     }
     
-    // Update global narration state BEFORE sending request
+    // Update global narration state
     setIsNarrating(true);
     setIsNarrationPaused(false);
     
-    // Get the LATEST page number from the store to ensure we're using the current page
-    // This is more reliable than using the local state which might be stale
+    // Get current page number
     const store = useStore.getState();
     const currentPage = store.pdfState.pageNum;
     
@@ -108,10 +98,7 @@ const PDFViewer = () => {
     // Ensure narration current page matches PDF page
     setNarrationCurrentPage(currentPage);
     
-    // Update last narrated page state to prevent duplicate narration
-    setLastNarratedPage(currentPage);
-    
-    // Try to extract the actual text content from the current page
+    // Try to extract the text content
     let pageText = "";
     try {
       if (pdfState.pdfDoc) {
@@ -126,38 +113,22 @@ const PDFViewer = () => {
       pageText = `Content from page ${currentPage}`;
     }
     
-    // Send narration request - try both approaches
+    // Send narration request
     console.log(`[PDFViewer] Sending narration request for page ${currentPage}`);
     
-    // Approach 1: Use a clear prompt that mentions get_current_page_content
     const success = sendTextInput(
-      `Using the function get_current_page_content, summarize and narrate page ${currentPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
+      `Using the function get_current_page_content, summarize and narrate page ${currentPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content.`
     );
     
     if (!success) {
       console.error('[PDFViewer] Failed to send first narration request');
       
-      // Try a more direct approach with the content included
       setTimeout(() => {
         console.log('[PDFViewer] Trying alternate narration approach');
         sendTextInput(
-          `Please narrate the following content from page ${currentPage}: ${pageText.substring(0, 1000)}... Summarize this content in a clear, engaging way, speaking directly to me.`
+          `Please narrate the following content from page ${currentPage}: ${pageText.substring(0, 1000)}... Summarize this content in a clear, engaging way.`
         );
       }, 1000);
-      
-    } else {
-      // Backup approach if the first didn't produce audio
-      setTimeout(() => {
-        // Check if we're still waiting for audio
-        if (useStore.getState().audioState.isNarrating && !useStore.getState().audioState.isPlayingAudio) {
-          console.log('[PDFViewer] No audio response yet, trying alternate approach');
-          
-          // Try another text input without the function call
-          sendTextInput(
-            `Please narrate and summarize the content of page ${currentPage} in a clear, engaging way.`
-          );
-        }
-      }, 3000);
     }
   };
 
@@ -168,258 +139,13 @@ const PDFViewer = () => {
     stopAudio();
   };
 
-  // Create a memoized rendering function that preserves the scaling
-  const renderPage = useCallback(async (pageNum: number) => {
-    if (!pdfState.pdfDoc) return;
-    
-    try {
-      setIsLoading(true);
-      
-      // Get the page
-      const page = await pdfState.pdfDoc.getPage(pageNum);
-      
-      // Get the canvas and context
-      const canvas = canvasRef.current;
-      const container = containerRef.current;
-      
-      if (!canvas || !container) {
-        setIsLoading(false);
-        return;
-      }
-      
-      const context = canvas.getContext('2d');
-      if (!context) {
-        setIsLoading(false);
-        return;
-      }
-      
-      // Reset the canvas completely - critical for preventing scaling issues
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      
-      // Use device pixel ratio for high resolution displays
-      const pixelRatio = window.devicePixelRatio || 1;
-      
-      // Check if we're on mobile or desktop
-      const isMobile = window.innerWidth < 768;
-      
-      // Get container dimensions with minimal padding
-      const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
-      
-      // IMPORTANT: Force rotation to 0 for consistent rendering
-      // By explicitly setting rotation to 0, we force PDF.js to render the page in its "natural" orientation
-      // Then we'll handle any needed rotation via CSS transforms
-      const defaultViewport = page.getViewport({ scale: 1, rotation: 0 });
-      
-      // Extract original dimensions
-      const origPageWidth = defaultViewport.width;
-      const origPageHeight = defaultViewport.height;
-      const origAspectRatio = origPageWidth / origPageHeight;
-      
-      // ALWAYS scale based on width to maintain aspect ratio
-      let scale = containerWidth / origPageWidth;
-      
-      // Apply different multipliers for mobile and desktop
-      scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
-      
-      // Get native rotation from PDF page (for debug info only)
-      let nativeRotation = 0;
-      try {
-        nativeRotation = page.rotate || 0;
-        console.log(`Page ${pageNum} native rotation: ${nativeRotation}°`);
-      } catch (e) {
-        console.log(`Could not get native rotation for page ${pageNum}`);
-      }
-      
-      console.log(`Rendering page ${pageNum} with scale ${scale} (container width: ${containerWidth}, is mobile: ${isMobile}, aspect ratio: ${origAspectRatio})`);
-      
-      // Create the viewport with the calculated scale and FORCE rotation to 0
-      // This ensures consistent base rendering across all devices
-      const viewport = page.getViewport({ scale, rotation: 0 });
-      
-      // Store the scale for reference
-      setBaseScale(scale);
-      
-      // Clear the canvas
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Set the canvas dimensions for internal rendering (accounting for pixel ratio)
-      canvas.width = Math.floor(viewport.width * pixelRatio);
-      canvas.height = Math.floor(viewport.height * pixelRatio);
-      
-      // Apply auto-sizing with appropriate aspect ratio
-      canvas.style.width = 'auto';
-      canvas.style.height = 'auto';
-      canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
-      
-      // For mobile, make sure we don't overflow
-      if (isMobile) {
-        canvas.style.maxWidth = '100%';
-        canvas.style.maxHeight = `calc(100vh - 150px)`;
-      } else {
-        // For desktop, limit width to avoid excess whitespace
-        canvas.style.maxWidth = '80%';
-        canvas.style.margin = '0 auto';
-      }
-      
-      // Apply the pixel ratio scale
-      context.scale(pixelRatio, pixelRatio);
-      
-      // High quality rendering settings
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = 'high';
-      
-      // Render the page with rotation forced to 0
-      const renderTask = page.render({
-        canvasContext: context,
-        viewport: viewport
-      });
-      
-      await renderTask.promise;
-      
-      // After rendering, apply CSS transforms if needed based on the native rotation
-      // This addresses mobile-specific orientation issues
-      if (nativeRotation === 180) {
-        // Page should be upside down - rotate it via CSS
-        canvas.style.transform = 'rotate(180deg)';
-      } else if (nativeRotation === 90) {
-        // Page should be rotated 90 degrees clockwise
-        canvas.style.transform = 'rotate(90deg)';
-      } else if (nativeRotation === 270) {
-        // Page should be rotated 90 degrees counter-clockwise
-        canvas.style.transform = 'rotate(-90deg)';
-      } else {
-        // No rotation needed
-        canvas.style.transform = 'none';
-      }
-      
-      setIsLoading(false);
-      
-    } catch (error) {
-      console.error('Error rendering PDF page:', error);
-      setIsLoading(false);
-    }
-  }, [pdfState.pdfDoc, setBaseScale]);
-
-  // Function to specifically handle first page loading
-  const ensureCorrectOrientation = useCallback(async () => {
-    if (!pdfState.pdfDoc || pdfState.pageNum !== 1) return;
-    
-    try {
-      // Only run this fix once per PDF load
-      if (hasFixedFirstPage) return;
-      
-      // Get the first page
-      const page = await pdfState.pdfDoc.getPage(1);
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext('2d');
-      const container = containerRef.current;
-      
-      if (!canvas || !context || !container) return;
-      
-      // Reset transformations
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      
-      // Clear the canvas
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Check if we're on mobile or desktop
-      const isMobile = window.innerWidth < 768;
-      
-      // Get container dimensions with minimal padding
-      const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
-      
-      // Get native rotation from PDF page
-      let nativeRotation = 0;
-      try {
-        nativeRotation = page.rotate || 0;
-        console.log(`First page native rotation: ${nativeRotation}°`);
-      } catch (e) {
-        console.log('Could not get native rotation for first page');
-      }
-      
-      // FORCE rotation to 0 for consistent rendering
-      const defaultViewport = page.getViewport({ scale: 1, rotation: 0 });
-      
-      // Extract original dimensions
-      const origPageWidth = defaultViewport.width;
-      const origPageHeight = defaultViewport.height;
-      const origAspectRatio = origPageWidth / origPageHeight;
-      
-      // ALWAYS scale based on width to maintain aspect ratio
-      let scale = containerWidth / origPageWidth;
-      
-      // Apply different multipliers for mobile and desktop
-      scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
-      
-      console.log(`First page rendering with scale ${scale} (aspect ratio: ${origAspectRatio})`);
-      
-      // Create the viewport with the calculated scale and FORCE rotation to 0
-      const viewport = page.getViewport({ scale, rotation: 0 });
-      
-      // Set the canvas dimensions for internal rendering (accounting for pixel ratio)
-      const pixelRatio = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(viewport.width * pixelRatio);
-      canvas.height = Math.floor(viewport.height * pixelRatio);
-      
-      // Apply auto-sizing with appropriate aspect ratio
-      canvas.style.width = 'auto';
-      canvas.style.height = 'auto';
-      canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
-      
-      // For mobile, make sure we don't overflow
-      if (isMobile) {
-        canvas.style.maxWidth = '100%';
-        canvas.style.maxHeight = `calc(100vh - 150px)`;
-      } else {
-        // For desktop, limit width to avoid excess whitespace
-        canvas.style.maxWidth = '80%';
-        canvas.style.margin = '0 auto';
-      }
-      
-      // Apply the pixel ratio scale
-      context.scale(pixelRatio, pixelRatio);
-      
-      // High quality rendering settings
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = 'high';
-      
-      // Render the page
-      const renderTask = page.render({
-        canvasContext: context,
-        viewport: viewport
-      });
-      
-      await renderTask.promise;
-      
-      // After rendering, apply CSS transforms if needed based on the native rotation
-      if (nativeRotation === 180) {
-        // Page should be upside down - rotate it via CSS
-        canvas.style.transform = 'rotate(180deg)';
-      } else if (nativeRotation === 90) {
-        // Page should be rotated 90 degrees clockwise
-        canvas.style.transform = 'rotate(90deg)';
-      } else if (nativeRotation === 270) {
-        // Page should be rotated 90 degrees counter-clockwise
-        canvas.style.transform = 'rotate(-90deg)';
-      } else {
-        // No rotation needed
-        canvas.style.transform = 'none';
-      }
-      
-      setHasFixedFirstPage(true);
-    } catch (error) {
-      console.error('Error in first page rendering:', error);
-    }
-  }, [pdfState.pdfDoc, pdfState.pageNum, hasFixedFirstPage]);
-
   // Load a PDF from a URL
   const loadPDF = useCallback(async (url: string) => {
     setLoadState('loading');
     setPdfError(null);
-    setHasFixedFirstPage(false);
     
     try {
-      // Use minimal configuration for most consistent results
+      // Load the PDF document with standard configuration
       const loadingTask = pdfjsLib.getDocument({
         url,
         cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
@@ -458,7 +184,6 @@ const PDFViewer = () => {
     try {
       // Set loading state
       setLoadState('loading');
-      setHasFixedFirstPage(false);
       console.log("Attempting to load default PDF");
       
       // Try loading the PDF directly from file
@@ -474,7 +199,7 @@ const PDFViewer = () => {
           const data = await response.arrayBuffer();
           console.log("PDF data fetched successfully, size:", data.byteLength);
           
-          // Simplify loading options for consistent rendering
+          // Basic configuration
           const loadingOptions = {
             data,
             cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
@@ -488,7 +213,7 @@ const PDFViewer = () => {
           setPDFDoc(pdfDoc);
           setPageCount(pdfDoc.numPages);
           
-          // Wait a brief moment before setting page number to ensure first page renders properly
+          // Wait a brief moment before setting page number
           setTimeout(() => {
             setPageNum(1);
             console.log("Set page number to 1");
@@ -542,12 +267,106 @@ const PDFViewer = () => {
     }
   };
 
+  // Simple page rendering function
+  const renderPage = useCallback(async (pageNum: number) => {
+    if (!pdfState.pdfDoc) return;
+    
+    try {
+      setIsLoading(true);
+      
+      // Get the page
+      const page = await pdfState.pdfDoc.getPage(pageNum);
+      
+      // Get the canvas and context
+      const canvas = canvasRef.current;
+      const container = containerRef.current;
+      
+      if (!canvas || !container) {
+        setIsLoading(false);
+        return;
+      }
+      
+      const context = canvas.getContext('2d');
+      if (!context) {
+        setIsLoading(false);
+        return;
+      }
+      
+      // Reset the canvas
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Use device pixel ratio for high resolution displays
+      const pixelRatio = window.devicePixelRatio || 1;
+      
+      // Check if we're on mobile or desktop
+      const isMobile = window.innerWidth < 768;
+      
+      // Get container dimensions with minimal padding
+      const containerWidth = container.clientWidth - (isMobile ? 16 : 64);
+      
+      // Get the viewport at scale 1 (let PDF.js handle orientation)
+      const defaultViewport = page.getViewport({ scale: 1 });
+      
+      // Calculate scale based on container width
+      let scale = containerWidth / defaultViewport.width;
+      
+      // Apply different multipliers for mobile and desktop
+      scale *= isMobile ? 0.95 : 0.65;
+      
+      // Create the viewport with the calculated scale
+      const viewport = page.getViewport({ scale });
+      
+      // Store the scale for reference
+      setBaseScale(scale);
+      
+      // Set the canvas dimensions
+      canvas.width = Math.floor(viewport.width * pixelRatio);
+      canvas.height = Math.floor(viewport.height * pixelRatio);
+      
+      // Apply auto-sizing with appropriate aspect ratio
+      canvas.style.width = 'auto';
+      canvas.style.height = 'auto';
+      canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+      canvas.style.transform = 'none'; // Reset any transforms
+      
+      // For mobile, make sure we don't overflow
+      if (isMobile) {
+        canvas.style.maxWidth = '100%';
+        canvas.style.maxHeight = `calc(100vh - 150px)`;
+      } else {
+        // For desktop, limit width to avoid excess whitespace
+        canvas.style.maxWidth = '80%';
+        canvas.style.margin = '0 auto';
+      }
+      
+      // Apply pixel ratio scale
+      context.scale(pixelRatio, pixelRatio);
+      
+      // High quality rendering settings
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      
+      // Render the page
+      const renderTask = page.render({
+        canvasContext: context,
+        viewport: viewport
+      });
+      
+      await renderTask.promise;
+      setIsLoading(false);
+      
+    } catch (error) {
+      console.error('Error rendering PDF page:', error);
+      setIsLoading(false);
+    }
+  }, [pdfState.pdfDoc, setBaseScale]);
+
   // Handle container resize
   useEffect(() => {
     if (!containerRef.current || !pdfState.pdfDoc) return;
     
     const resizeObserver = new ResizeObserver(() => {
-      // Only re-render if we have enough information
       if (pdfState.pdfDoc && pdfState.pageNum > 0) {
         console.log("Container resized, re-rendering PDF");
         renderPage(pdfState.pageNum);
@@ -568,33 +387,27 @@ const PDFViewer = () => {
     }
   }, [pdfState.pdfDoc, pdfState.pageNum, pdfState.forceRender, renderPage]);
 
-  // Enhanced next page function with narration support
+  // Page navigation with narration support
   const handleNextPage = () => {
     if (pdfState.pageNum < pdfState.pageCount) {
       const nextPageNum = pdfState.pageNum + 1;
       console.log(`[PDFViewer] Moving to next page: ${nextPageNum}`);
       
       // Stop any current audio processing first
-      if (audioState.isNarrating) {
-        // If audio is currently playing, stop it before changing pages
-        if (currentAudio) {
-          stopAudio();
-        }
+      if (audioState.isNarrating && currentAudio) {
+        stopAudio();
       }
       
-      // Update the page number first
+      // Update the page number
       nextPage();
       
-      // If narration is active, update narration state to match, regardless of pause state
+      // Handle narration if active
       if (audioState.isNarrating) {
         console.log(`[PDFViewer] Narration active, updating narration page to ${nextPageNum}`);
-        
-        // Update the narration current page
         setNarrationCurrentPage(nextPageNum);
         
-        // Only start narration if it's not paused
+        // Start narration if not paused
         if (!audioState.isNarrationPaused) {
-          // Use setTimeout to ensure state is updated before starting narration
           setTimeout(() => {
             console.log(`[PDFViewer] Starting narration for page ${nextPageNum}`);
             startNarration();
@@ -604,33 +417,27 @@ const PDFViewer = () => {
     }
   };
 
-  // Enhanced previous page function with narration support
+  // Previous page with narration support
   const handlePrevPage = () => {
     if (pdfState.pageNum > 1) {
       const prevPageNum = pdfState.pageNum - 1;
       console.log(`[PDFViewer] Moving to previous page: ${prevPageNum}`);
       
       // Stop any current audio processing first
-      if (audioState.isNarrating) {
-        // If audio is currently playing, stop it before changing pages
-        if (currentAudio) {
-          stopAudio();
-        }
+      if (audioState.isNarrating && currentAudio) {
+        stopAudio();
       }
       
-      // Update the page number first
+      // Update the page number
       prevPage();
       
-      // If narration is active, update narration state to match, regardless of pause state
+      // Handle narration if active
       if (audioState.isNarrating) {
         console.log(`[PDFViewer] Narration active, updating narration page to ${prevPageNum}`);
-        
-        // Update the narration current page
         setNarrationCurrentPage(prevPageNum);
         
-        // Only start narration if it's not paused
+        // Start narration if not paused
         if (!audioState.isNarrationPaused) {
-          // Use setTimeout to ensure state is updated before starting narration
           setTimeout(() => {
             console.log(`[PDFViewer] Starting narration for page ${prevPageNum}`);
             startNarration();
@@ -657,110 +464,19 @@ const PDFViewer = () => {
     };
   }, [pdfState.pageNum, pdfState.pageCount, audioState.isNarrating, audioState.isNarrationPaused]);
 
-  // Run orientation fix when needed
+  // Handle automatic narration for page changes when narration is enabled
   useEffect(() => {
-    if (pdfState.pdfDoc && pdfState.pageNum === 1 && !hasFixedFirstPage) {
-      ensureCorrectOrientation();
-    }
-  }, [pdfState.pdfDoc, pdfState.pageNum, hasFixedFirstPage, ensureCorrectOrientation]);
-  
-  // Handle automatic narration when page changes
-  useEffect(() => {
-    // If narration is enabled and the page changes, start narration for the new page
     if (audioState.isNarrating && 
         !audioState.isNarrationPaused && 
         pdfState.pageNum === audioState.narrationCurrentPage && 
-        !isProcessingPage) {
-      console.log(`Auto-triggering narration for page ${pdfState.pageNum}`);
-      
-      // Stop any current audio processing first
-      if (currentAudio) {
-        stopAudio();
-      }
-      
-      // Current page number from props, not getState
-      const currentPageNum = pdfState.pageNum;
-      
-      // Ensure the narration current page is updated to match
-      if (currentPageNum !== audioState.narrationCurrentPage) {
-        setNarrationCurrentPage(currentPageNum);
-      }
-      
-      // Add a small delay to ensure state updates are processed
-      setTimeout(() => {
-        // Send text input to narrate the current page
-        sendTextInput(
-          `Using the function get_current_page_content, definitively speak the content of page ${currentPageNum} in a summarized manner and discuss it as I am the end user. This is report which is the result of my assessment. Do not reference the content itself in your response such as "it mentions", "the content states", etc.`
-        );
-      }, 100);
-    }
-  }, [audioState.isNarrating, audioState.isNarrationPaused, audioState.narrationCurrentPage, pdfState.pageNum, isProcessingPage, sendTextInput, setNarrationCurrentPage, currentAudio, stopAudio]);
-
-  // Add an additional effect specifically for handling manual navigation between pages when narration is ON
-  useEffect(() => {
-    // Only run this if narration is active but we're not currently processing a page,
-    // and the pdfState.pageNum has changed without audio processing in progress
-    if (audioState.isNarrating && 
-        !audioState.isNarrationPaused && 
         !isProcessingPage && 
-        !currentAudio &&
-        pdfState.pageNum !== lastNarratedPage) {
+        !currentAudio) {
       
-      console.log(`[PDFViewer] Detected unprocessed page change to ${pdfState.pageNum}`);
-      
-      // Update our last narrated page
-      setLastNarratedPage(pdfState.pageNum);
-      
-      // Update narration current page to match PDF page
-      setNarrationCurrentPage(pdfState.pageNum);
-      
-      // Add a delay to ensure state is updated
-      setTimeout(() => {
-        console.log(`[PDFViewer] Starting narration for page ${pdfState.pageNum} after page change`);
-        startNarration();
-      }, 200);
+      console.log(`Auto-triggering narration for page ${pdfState.pageNum}`);
+      startNarration();
     }
-  }, [pdfState.pageNum, audioState.isNarrating, audioState.isNarrationPaused, isProcessingPage, currentAudio, lastNarratedPage]);
-
-  // Add back the manual page change handler
-  useEffect(() => {
-    // This effect specifically watches for manual page navigation while narration is active
-    if (audioState.isNarrating) {
-      // Check if the current page is different from narration current page and we're not already processing
-      if (pdfState.pageNum !== audioState.narrationCurrentPage && !isProcessingPage) {
-        console.log(`[PDFViewer] Manual page change detected during narration - from page ${audioState.narrationCurrentPage} to ${pdfState.pageNum}`);
-        
-        // Stop any current audio processing first
-        if (currentAudio) {
-          stopAudio();
-        }
-        
-        // Update narration current page to match the manually changed page
-        setNarrationCurrentPage(pdfState.pageNum);
-        
-        // Store the current page number as a local variable
-        const currentPageNum = pdfState.pageNum;
-        
-        // Only start narration if it's not paused
-        if (!audioState.isNarrationPaused) {
-          // Add a small delay to ensure the state update happens before sending the request
-          setTimeout(() => {
-            // Make sure we're not still processing a previous page
-            if (isProcessingPage) {
-              stopAudio();
-            }
-            
-            console.log(`[PDFViewer] Triggering narration for manually navigated page ${currentPageNum}`);
-            
-            // Send text input to narrate the current page with a more direct prompt
-            sendTextInput(
-              `Using the function get_current_page_content, summarize and narrate page ${currentPageNum} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content.`
-            );
-          }, 300);
-        }
-      }
-    }
-  }, [pdfState.pageNum, audioState.isNarrating, audioState.isNarrationPaused, audioState.narrationCurrentPage, isProcessingPage, setNarrationCurrentPage, sendTextInput, currentAudio, stopAudio]);
+  }, [audioState.isNarrating, audioState.isNarrationPaused, audioState.narrationCurrentPage, 
+      pdfState.pageNum, isProcessingPage, currentAudio]);
 
   return (
     <div className="flex flex-col h-full max-h-full overflow-hidden">
