@@ -205,9 +205,10 @@ const PDFViewer = () => {
       // Get container dimensions with minimal padding
       const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
       
-      // Get the default viewport at scale 1 - let PDF.js determine the default rotation
-      // This ensures we respect the document's native orientation
-      const defaultViewport = page.getViewport({ scale: 1 });
+      // IMPORTANT: Force rotation to 0 for consistent rendering
+      // By explicitly setting rotation to 0, we force PDF.js to render the page in its "natural" orientation
+      // Then we'll handle any needed rotation via CSS transforms
+      const defaultViewport = page.getViewport({ scale: 1, rotation: 0 });
       
       // Extract original dimensions
       const origPageWidth = defaultViewport.width;
@@ -220,11 +221,20 @@ const PDFViewer = () => {
       // Apply different multipliers for mobile and desktop
       scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
       
+      // Get native rotation from PDF page (for debug info only)
+      let nativeRotation = 0;
+      try {
+        nativeRotation = page.rotate || 0;
+        console.log(`Page ${pageNum} native rotation: ${nativeRotation}°`);
+      } catch (e) {
+        console.log(`Could not get native rotation for page ${pageNum}`);
+      }
+      
       console.log(`Rendering page ${pageNum} with scale ${scale} (container width: ${containerWidth}, is mobile: ${isMobile}, aspect ratio: ${origAspectRatio})`);
       
-      // Create the viewport with the calculated scale, with no explicit rotation
-      // This ensures PDF.js uses the document's internal rotation values
-      const viewport = page.getViewport({ scale });
+      // Create the viewport with the calculated scale and FORCE rotation to 0
+      // This ensures consistent base rendering across all devices
+      const viewport = page.getViewport({ scale, rotation: 0 });
       
       // Store the scale for reference
       setBaseScale(scale);
@@ -258,13 +268,30 @@ const PDFViewer = () => {
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = 'high';
       
-      // Render the page
+      // Render the page with rotation forced to 0
       const renderTask = page.render({
         canvasContext: context,
         viewport: viewport
       });
       
       await renderTask.promise;
+      
+      // After rendering, apply CSS transforms if needed based on the native rotation
+      // This addresses mobile-specific orientation issues
+      if (nativeRotation === 180) {
+        // Page should be upside down - rotate it via CSS
+        canvas.style.transform = 'rotate(180deg)';
+      } else if (nativeRotation === 90) {
+        // Page should be rotated 90 degrees clockwise
+        canvas.style.transform = 'rotate(90deg)';
+      } else if (nativeRotation === 270) {
+        // Page should be rotated 90 degrees counter-clockwise
+        canvas.style.transform = 'rotate(-90deg)';
+      } else {
+        // No rotation needed
+        canvas.style.transform = 'none';
+      }
+      
       setIsLoading(false);
       
     } catch (error) {
@@ -301,8 +328,17 @@ const PDFViewer = () => {
       // Get container dimensions with minimal padding
       const containerWidth = container.clientWidth - (isMobile ? 16 : 64); // Increased padding for desktop
       
-      // Get the default viewport at scale 1 - let PDF.js handle rotation
-      const defaultViewport = page.getViewport({ scale: 1 });
+      // Get native rotation from PDF page
+      let nativeRotation = 0;
+      try {
+        nativeRotation = page.rotate || 0;
+        console.log(`First page native rotation: ${nativeRotation}°`);
+      } catch (e) {
+        console.log('Could not get native rotation for first page');
+      }
+      
+      // FORCE rotation to 0 for consistent rendering
+      const defaultViewport = page.getViewport({ scale: 1, rotation: 0 });
       
       // Extract original dimensions
       const origPageWidth = defaultViewport.width;
@@ -315,10 +351,10 @@ const PDFViewer = () => {
       // Apply different multipliers for mobile and desktop
       scale *= isMobile ? 0.95 : 0.65; // Reduced desktop scale from 0.72 to 0.65
       
-      console.log(`First page orientation with scale ${scale} (aspect ratio: ${origAspectRatio})`);
+      console.log(`First page rendering with scale ${scale} (aspect ratio: ${origAspectRatio})`);
       
-      // Create the viewport with the calculated scale only
-      const viewport = page.getViewport({ scale });
+      // Create the viewport with the calculated scale and FORCE rotation to 0
+      const viewport = page.getViewport({ scale, rotation: 0 });
       
       // Set the canvas dimensions for internal rendering (accounting for pixel ratio)
       const pixelRatio = window.devicePixelRatio || 1;
@@ -354,6 +390,22 @@ const PDFViewer = () => {
       });
       
       await renderTask.promise;
+      
+      // After rendering, apply CSS transforms if needed based on the native rotation
+      if (nativeRotation === 180) {
+        // Page should be upside down - rotate it via CSS
+        canvas.style.transform = 'rotate(180deg)';
+      } else if (nativeRotation === 90) {
+        // Page should be rotated 90 degrees clockwise
+        canvas.style.transform = 'rotate(90deg)';
+      } else if (nativeRotation === 270) {
+        // Page should be rotated 90 degrees counter-clockwise
+        canvas.style.transform = 'rotate(-90deg)';
+      } else {
+        // No rotation needed
+        canvas.style.transform = 'none';
+      }
+      
       setHasFixedFirstPage(true);
     } catch (error) {
       console.error('Error in first page rendering:', error);
@@ -364,9 +416,10 @@ const PDFViewer = () => {
   const loadPDF = useCallback(async (url: string) => {
     setLoadState('loading');
     setPdfError(null);
+    setHasFixedFirstPage(false);
     
     try {
-      // Use default PDF.js options with necessary configuration
+      // Use minimal configuration for most consistent results
       const loadingTask = pdfjsLib.getDocument({
         url,
         cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
@@ -383,9 +436,6 @@ const PDFViewer = () => {
       
       // Set initial page number
       setPageNum(1);
-      
-      // Reset orientation fix flag
-      setHasFixedFirstPage(false);
       
       // Update load state
       setLoadState('success');
@@ -408,6 +458,7 @@ const PDFViewer = () => {
     try {
       // Set loading state
       setLoadState('loading');
+      setHasFixedFirstPage(false);
       console.log("Attempting to load default PDF");
       
       // Try loading the PDF directly from file
@@ -423,7 +474,7 @@ const PDFViewer = () => {
           const data = await response.arrayBuffer();
           console.log("PDF data fetched successfully, size:", data.byteLength);
           
-          // Simplify loading options - only use essential parameters
+          // Simplify loading options for consistent rendering
           const loadingOptions = {
             data,
             cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
@@ -436,9 +487,6 @@ const PDFViewer = () => {
           
           setPDFDoc(pdfDoc);
           setPageCount(pdfDoc.numPages);
-          
-          // Reset orientation fix flag
-          setHasFixedFirstPage(false);
           
           // Wait a brief moment before setting page number to ensure first page renders properly
           setTimeout(() => {
@@ -470,9 +518,6 @@ const PDFViewer = () => {
             const pdfDoc = await pdfjsLib.getDocument(loadingOptions).promise;
             setPDFDoc(pdfDoc);
             setPageCount(pdfDoc.numPages);
-            
-            // Reset orientation fix flag
-            setHasFixedFirstPage(false);
             
             setTimeout(() => { setPageNum(1); }, 100);
             setPdfError(null);
