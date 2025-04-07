@@ -39,7 +39,6 @@ interface AppState {
   nextPage: () => void;
   prevPage: () => void;
   setBaseScale: (baseScale: number) => void;
-  pdfContent?: Record<number, string>;
 
   // Audio State
   audioState: AudioState;

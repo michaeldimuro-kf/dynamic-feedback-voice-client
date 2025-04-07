@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import io, { Socket } from 'socket.io-client';
 import useStore from '../store/useStore';
-import { audioStreamService } from '../services/audioStreamService';
 
 // Global socket instance to ensure single connection across components
 let globalSocket: Socket | null = null;
@@ -51,28 +50,6 @@ const useSocket = () => {
   const [isProcessingPage, setIsProcessingPage] = useState(false);
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
   const [isPaused, setIsPaused] = useState(false);
-  const [isStreaming, setIsStreaming] = useState(false);
-
-  const currentPageTextRef = useRef<string>('');
-  const autoAdvanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Direct access to audio service instead of using the hook
-  const addAudioChunk = useCallback((chunk: string) => {
-    if (chunk && chunk.length > 10) {
-      audioStreamService.addAudioChunk(chunk);
-    } else {
-      console.warn('[Socket] Invalid audio chunk received');
-    }
-  }, []);
-
-  const completeAudioStream = useCallback(() => {
-    audioStreamService.completeAudioStream();
-  }, []);
-
-  const resetAudioStream = useCallback(() => {
-    audioStreamService.reset();
-  }, []);
-
   const createSocketConnection = useCallback(() => {
     // If we already have a connected socket, use it
     if (globalSocket?.connected) {
@@ -270,42 +247,154 @@ const useSocket = () => {
       });
 
       socket.on('audio-response', (data) => {
-        console.log('[Socket] Explicit audio-response handler called with data length:', data?.audio?.length);
-        
         if (data && data.audio && data.audio.length > 0) {
           try {
-            console.log('[Socket] Processing audio response, length:', data.audio.length);
+            console.log('[Socket] Received audio response, length:', data.audio.length, 'for page:', data.pageNumber);
             
-            // Convert array to binary data
+            // Convert array back to Blob
             const audioArray = new Uint8Array(data.audio);
+            const audioBlob = new Blob([audioArray], { type: 'audio/mp3' });
+
+            // Create object URL for the blob
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            // Create audio element with preload enabled
+            const audio = new Audio();
+            audio.preload = 'auto';
             
-            // Process the audio data using our helper function
-            processBinaryAudioData(audioArray)
-              .then(base64Audio => {
-                // Use our RxJS service to play the audio
-                addAudioChunk(base64Audio);
+            // Log when metadata is loaded
+            audio.onloadedmetadata = () => {
+              console.log('[Socket] Audio metadata loaded, duration:', audio.duration);
+            };
+            
+            // Log when data is loaded
+            audio.onloadeddata = () => {
+              console.log('[Socket] Audio data loaded, ready state:', audio.readyState);
+            };
+            
+            // Set up event handlers BEFORE setting src
+            // This ensures events are triggered in the correct order
+            
+            // Handle loading error
+            audio.onerror = (err) => {
+              console.error('[Socket] Audio loading error:', err, 'Code:', audio.error?.code);
+              URL.revokeObjectURL(audioUrl);
+              setIsProcessing(false);
+              useStore.getState().setIsPlayingAudio(false);
+            };
+            
+            // When audio can play through, update state
+            audio.oncanplaythrough = () => {
+              console.log('[Socket] Audio ready to play through');
+              // Store audio element reference
+              setCurrentAudio(audio);
+              // Update global state
+              useStore.getState().setIsPlayingAudio(true);
+            };
+            
+            // Set up ended handler
+            audio.onended = () => {
+              const currentPage = data.pageNumber;
+              console.log(`[Socket] Audio playback ended for page ${currentPage}`);
+              
+              // Clean up resources
+              URL.revokeObjectURL(audioUrl);
+              
+              // Update component state
+              setCurrentAudio(null);
+              setIsProcessingPage(false);
+              
+              // Update global state for audio playback
+              useStore.getState().setIsPlayingAudio(false);
+              
+              // If we're narrating and not paused, trigger narration auto-advance
+              const store = useStore.getState();
+              if (store.audioState.isNarrating && !store.audioState.isNarrationPaused) {
+                console.log(`[Socket] Auto-advancing from page ${currentPage}`);
                 
-                // Update global state
-                useStore.getState().setIsPlayingAudio(true);
+                const nextPage = currentPage + 1;
                 
-                // Mark processing as complete when the audio is done
-                // We'll use a timeout as an estimation
-                setTimeout(() => {
-                  setIsProcessing(false);
-                  useStore.getState().setIsPlayingAudio(false);
-                  completeAudioStream(); // Mark the streaming as complete
-                }, 5000); // Estimate for audio playback time
-              })
-              .catch(error => {
-                console.error('[Socket] Error processing audio data:', error);
+                if (nextPage <= store.pdfState.pageCount) {
+                  // Update narration state
+                  store.setNarrationCurrentPage(nextPage);
+                  
+                  // Change the page in the PDF viewer
+                  store.setPageNum(nextPage);
+                  
+                  // Request the next page narration
+                  setTimeout(() => {
+                    if (socketRef.current) {
+                      socketRef.current.emit('text-input', { 
+                        text: `Using the function get_current_page_content, summarize and narrate page ${nextPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
+                      });
+                    }
+                  }, 500);
+                } else {
+                  // No more pages to narrate
+                  console.log('[Socket] Reached end of document');
+                  store.setIsNarrating(false);
+                }
+              }
+            };
+            
+            // Now set the source and load the audio
+            audio.src = audioUrl;
+            
+            // Log that we're attempting to play
+            console.log('[Socket] Setting audio source and attempting to play');
+            
+            // Play the audio immediately
+            const playPromise = audio.play();
+            
+            if (playPromise !== undefined) {
+              playPromise.then(() => {
+                console.log('[Socket] Audio playback started successfully');
+              }).catch(err => {
+                console.error('[Socket] Error playing audio:', err);
+                
+                if (err.name === 'NotAllowedError') {
+                  console.warn('[Socket] Browser blocked autoplay. User interaction required.');
+                  
+                  // For Chrome, try force unlock audio by playing a short silent sound
+                  try {
+                    const silentContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+                    const silentOsc = silentContext.createOscillator();
+                    const silentGain = silentContext.createGain();
+                    silentGain.gain.value = 0.01;
+                    silentOsc.connect(silentGain);
+                    silentGain.connect(silentContext.destination);
+                    silentOsc.start();
+                    silentOsc.stop(silentContext.currentTime + 0.001);
+                    
+                    // Try playing again after a short delay
+                    setTimeout(() => {
+                      console.log('[Socket] Attempting playback again after silent sound');
+                      audio.play().catch(e => console.error('[Socket] Still failed after silent sound:', e));
+                    }, 100);
+                  } catch (e) {
+                    console.error('[Socket] Error creating silent sound:', e);
+                  }
+                  
+                  // Add a one-time click handler to the document to play on next user interaction
+                  const playOnUserInteraction = () => {
+                    console.log('[Socket] User interaction detected, attempting playback.');
+                    audio.play().catch(e => console.error('[Socket] Still failed after interaction:', e));
+                    document.removeEventListener('click', playOnUserInteraction);
+                  };
+                  
+                  document.addEventListener('click', playOnUserInteraction, { once: true });
+                }
+                
                 setIsProcessing(false);
               });
+            }
+            
           } catch (error) {
-            console.error('[Socket] Error in audio-response handler:', error);
+            console.error('[Socket] Error processing audio response:', error);
             setIsProcessing(false);
           }
         } else {
-          console.warn('[Socket] Empty audio response received');
+          console.warn('[Socket] Received empty audio response');
           setIsProcessing(false);
         }
       });
@@ -366,83 +455,6 @@ const useSocket = () => {
     };
   }, [createSocketConnection, socketReady]);
 
-  // Function to extract mime type from audio data
-  const detectAudioMimeType = (audioData: Uint8Array): string => {
-    // Simple detection of audio format based on binary header
-    if (audioData.length >= 4) {
-      // WebM starts with 1A 45 DF A3
-      if (audioData[0] === 0x1A && audioData[1] === 0x45 && audioData[2] === 0xDF && audioData[3] === 0xA3) {
-        return 'audio/webm';
-      }
-      // WAV starts with RIFF header (52 49 46 46)
-      else if (audioData[0] === 0x52 && audioData[1] === 0x49 && audioData[2] === 0x46 && audioData[3] === 0x46) {
-        return 'audio/wav';
-      }
-      // MP3 typically starts with ID3 (49 44 33) or sync frame (FF Ex)
-      else if ((audioData[0] === 0x49 && audioData[1] === 0x44 && audioData[2] === 0x33) ||
-              (audioData[0] === 0xFF && (audioData[1] & 0xE0) === 0xE0)) {
-        return 'audio/mpeg';
-      }
-      // OGG starts with "OggS" (4F 67 67 53)
-      else if (audioData[0] === 0x4F && audioData[1] === 0x67 && audioData[2] === 0x67 && audioData[3] === 0x53) {
-        return 'audio/ogg';
-      }
-      // AAC ADTS starts with FF F1 (sync word)
-      else if (audioData[0] === 0xFF && (audioData[1] & 0xF0) === 0xF0) {
-        return 'audio/aac';
-      }
-      // FLAC starts with "fLaC" (66 4C 61 43)
-      else if (audioData[0] === 0x66 && audioData[1] === 0x4C && audioData[2] === 0x61 && audioData[3] === 0x43) {
-        return 'audio/flac';
-      }
-    }
-    
-    // If we can't detect or have too little data, default to MP3 - most universally supported
-    return 'audio/mpeg';
-  };
-
-  // Process binary audio data for playback
-  const processBinaryAudioData = (audioArray: Uint8Array): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      try {
-        // Detect the audio format
-        const mimeType = detectAudioMimeType(audioArray);
-        console.log(`[Socket] Detected audio format: ${mimeType}`);
-        
-        // Create blob with detected mime type
-        const audioBlob = new Blob([audioArray], { type: mimeType });
-        
-        // Read the blob as base64
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const dataUrl = reader.result as string;
-          if (!dataUrl || typeof dataUrl !== 'string') {
-            reject(new Error('[Socket] Could not convert audio data to base64'));
-            return;
-          }
-          
-          const base64Audio = dataUrl.split(',')[1]; // Remove the data URL prefix
-          
-          if (base64Audio && base64Audio.length > 0) {
-            resolve(base64Audio);
-          } else {
-            reject(new Error('[Socket] Could not convert audio data to base64'));
-          }
-        };
-        
-        reader.onerror = (error) => {
-          console.error('[Socket] Error reading audio data:', error);
-          reject(error);
-        };
-        
-        reader.readAsDataURL(audioBlob);
-      } catch (error) {
-        console.error('[Socket] Error processing binary audio data:', error);
-        reject(error);
-      }
-    });
-  };
-
   // Handle page audio response function
   const handlePageAudioResponse = (data: PageAudioResponse) => {
     console.log('[Socket] Received page-audio-response event for page', data?.pageNumber);
@@ -454,64 +466,116 @@ const useSocket = () => {
     }
 
     try {
-      // Convert array to binary data
+      // Convert array to AudioBuffer
       const audioArray = new Uint8Array(data.audio);
+      const audioBlob = new Blob([audioArray], { type: 'audio/mp3' });
+      const audioUrl = URL.createObjectURL(audioBlob);
       
-      // Process the audio data
-      processBinaryAudioData(audioArray)
-        .then(base64Audio => {
-          // Use our RxJS service to play the audio
-          addAudioChunk(base64Audio);
+      // Create audio element with preload enabled
+      const audio = new Audio();
+      audio.preload = 'auto';
+      
+      // Set up event handlers BEFORE setting src
+      
+      // Handle loading error
+      audio.onerror = (err) => {
+        console.error('[Socket] Page audio loading error:', err);
+        URL.revokeObjectURL(audioUrl);
+        setIsProcessingPage(false);
+        useStore.getState().setIsPlayingAudio(false);
+      };
+      
+      // When audio can play through, update state
+      audio.oncanplaythrough = () => {
+        console.log('[Socket] Page audio ready to play through');
+        // Store audio element reference
+        setCurrentAudio(audio);
+        // Update global state
+        useStore.getState().setIsPlayingAudio(true);
+      };
+      
+      // Set up ended handler
+      audio.onended = () => {
+        const currentPage = data.pageNumber;
+        console.log(`[Socket] Page audio playback ended for page ${currentPage}`);
+        
+        // Clean up resources
+        URL.revokeObjectURL(audioUrl);
+        
+        // Update component state
+        setCurrentAudio(null);
+        setIsProcessingPage(false);
+        
+        // Update global state for audio playback
+        useStore.getState().setIsPlayingAudio(false);
+        
+        // If we're narrating and not paused, advance to next page
+        const store = useStore.getState();
+        const isNarrating = store.audioState.isNarrating;
+        const isNarrationPaused = store.audioState.isNarrationPaused;
+        const narrationCurrentPage = store.audioState.narrationCurrentPage;
+        const pageCount = store.pdfState.pageCount;
+        
+        if (isNarrating && !isNarrationPaused && narrationCurrentPage === currentPage) {
+          console.log(`[Socket] Advancing from page ${currentPage}`);
           
-          // Update global state
-          useStore.getState().setIsPlayingAudio(true);
+          // Calculate next page
+          const nextPage = narrationCurrentPage + 1;
           
-          // Handle auto-narration advance when audio finishes
-          // We'll do this via a timeout since we can't hook into the RxJS stream's completion here
-          const autoAdvanceTimeout = setTimeout(() => {
-            // Check if we're still narrating (user hasn't manually stopped)
-            const store = useStore.getState();
-            if (store.audioState.isNarrating && !store.audioState.isNarrationPaused) {
-              console.log(`[Socket] Auto-advancing from page ${data.pageNumber}`);
-              
-              const nextPage = data.pageNumber + 1;
-              
-              if (nextPage <= store.pdfState.pageCount) {
-                // Update narration state
-                store.setNarrationCurrentPage(nextPage);
-                
-                // Change the page in the PDF viewer
-                store.setPageNum(nextPage);
-                
-                // Request the next page narration
-                setTimeout(() => {
-                  if (socketRef.current) {
-                    socketRef.current.emit('text-input', { 
-                      text: `Using the function get_current_page_content, summarize and narrate page ${nextPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
-                    });
-                  }
-                }, 500);
-              } else {
-                // No more pages to narrate
-                console.log('[Socket] Reached end of document');
-                store.setIsNarrating(false);
-                completeAudioStream(); // Mark the streaming as complete
-              }
-            }
+          if (nextPage <= pageCount) {
+            console.log(`[Socket] Moving to page ${nextPage}`);
             
-            // Clean up state
-            setIsProcessingPage(false);
-            useStore.getState().setIsPlayingAudio(false);
-          }, 5000); // Estimate for audio playback time
+            // Update narration state
+            store.setNarrationCurrentPage(nextPage);
+            
+            // Update PDF page
+            store.setPageNum(nextPage);
+            
+            // Request audio summary for the next page
+            setTimeout(() => {
+              if (socketRef.current) {
+                console.log(`[Socket] Sending request for page ${nextPage}`);
+                
+                // For next pages, send the text message
+                socketRef.current.emit('text-input', { 
+                  text: `Using the function get_current_page_content, summarize and narrate page ${nextPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
+                });
+              }
+            }, 500);
+          } else {
+            // No more pages
+            console.log('[Socket] Reached end of document');
+            store.setIsNarrating(false);
+          }
+        }
+      };
+      
+      // Now set the source and load the audio
+      audio.src = audioUrl;
+      
+      // Play the audio immediately
+      const playPromise = audio.play();
+      
+      if (playPromise !== undefined) {
+        playPromise.catch(err => {
+          console.error('[Socket] Error playing page audio:', err);
           
-          // Store the timeout so we can clear it if needed
-          autoAdvanceTimeoutRef.current = autoAdvanceTimeout;
-        })
-        .catch(error => {
-          console.error('[Socket] Error processing page audio data:', error);
+          if (err.name === 'NotAllowedError') {
+            console.warn('[Socket] Browser blocked page audio autoplay. User interaction required.');
+            
+            // Add a one-time click handler to the document to play on next user interaction
+            const playOnUserInteraction = () => {
+              console.log('[Socket] User interaction detected, attempting page audio playback.');
+              audio.play().catch(e => console.error('[Socket] Still failed after interaction:', e));
+              document.removeEventListener('click', playOnUserInteraction);
+            };
+            
+            document.addEventListener('click', playOnUserInteraction, { once: true });
+          }
+          
           setIsProcessingPage(false);
-          useStore.getState().setIsPlayingAudio(false);
         });
+      }
     } catch (error) {
       console.error('[Socket] Error handling page audio response:', error);
       setIsProcessingPage(false);
@@ -550,30 +614,58 @@ const useSocket = () => {
         try {
           console.log('[Socket] Processing audio response, length:', data.audio.length);
           
-          // Convert array to binary data
+          // Convert array to AudioBuffer
           const audioArray = new Uint8Array(data.audio);
+          const audioBlob = new Blob([audioArray], { type: 'audio/mp3' });
+          const audioUrl = URL.createObjectURL(audioBlob);
           
-          // Process the audio data using our helper function
-          processBinaryAudioData(audioArray)
-            .then(base64Audio => {
-              // Use our RxJS service to play the audio
-              addAudioChunk(base64Audio);
-              
-              // Update global state
-              useStore.getState().setIsPlayingAudio(true);
-              
-              // Mark processing as complete when the audio is done
-              // We'll use a timeout as an estimation
-              setTimeout(() => {
-                setIsProcessing(false);
-                useStore.getState().setIsPlayingAudio(false);
-                completeAudioStream(); // Mark the streaming as complete
-              }, 5000); // Estimate for audio playback time
-            })
-            .catch(error => {
-              console.error('[Socket] Error processing audio data:', error);
-              setIsProcessing(false);
-            });
+          // Store the audio URL globally for debugging
+          (window as any).lastAudioUrl = audioUrl;
+          console.log('[Socket] Audio URL created and stored for debugging at window.lastAudioUrl');
+          
+          // Create audio element with preload enabled
+          const audio = new Audio();
+          audio.preload = 'auto';
+          
+          // Set up error and event handlers
+          audio.onerror = (err) => {
+            console.error('[Socket] Audio loading error:', err);
+            URL.revokeObjectURL(audioUrl);
+            setIsProcessing(false);
+          };
+          
+          audio.oncanplaythrough = () => {
+            console.log('[Socket] Audio can play through, attempting playback');
+            setCurrentAudio(audio);
+            useStore.getState().setIsPlayingAudio(true);
+            
+            // Play it
+            const playPromise = audio.play();
+            if (playPromise) {
+              playPromise.catch(err => {
+                console.error('[Socket] Play failed in canplaythrough handler:', err);
+              });
+            }
+          };
+          
+          audio.onended = () => {
+            console.log('[Socket] Audio playback ended');
+            URL.revokeObjectURL(audioUrl);
+            setCurrentAudio(null);
+            setIsProcessingPage(false);
+            useStore.getState().setIsPlayingAudio(false);
+          };
+          
+          // Set the source and attempt to play
+          audio.src = audioUrl;
+          
+          // Force trigger playing with a timeout as backup
+          setTimeout(() => {
+            if (audio.paused) {
+              console.log('[Socket] Audio still paused after timeout, attempting play');
+              audio.play().catch(err => console.error('[Socket] Delayed play attempt failed:', err));
+            }
+          }, 500);
         } catch (error) {
           console.error('[Socket] Error in audio-response handler:', error);
           setIsProcessing(false);
@@ -611,7 +703,6 @@ const useSocket = () => {
         // Handle different function types
         switch (functionName) {
           case 'getPageContent':
-          case 'get_current_page_content':
             console.log('[Socket] Get page content function call with callId:', callId);
             
             // Get the current page content from the PDF
@@ -636,16 +727,13 @@ const useSocket = () => {
                   
                   console.log(`[Socket] Extracted ${pageText.length} characters of text from page ${pageNumber}`);
                   
-                  // Store the text for reference
-                  currentPageTextRef.current = pageText;
-                  
                   // Send the result back to the server
                   if (socketRef.current) {
                     console.log('[Socket] Sending function call result with real page content for callId:', callId);
                     socketRef.current.emit('function-call-result', {
                       callId,
                       sessionId,
-                      functionName: functionName,
+                      functionName: 'getPageContent',
                       result: JSON.stringify({
                         content: pageText,
                         pageNumber,
@@ -661,7 +749,7 @@ const useSocket = () => {
                     socketRef.current.emit('function-call-result', {
                       callId,
                       sessionId,
-                      functionName: functionName,
+                      functionName: 'getPageContent',
                       result: JSON.stringify({
                         error: `Error extracting text: ${error}`,
                         success: false
@@ -677,7 +765,7 @@ const useSocket = () => {
                   socketRef.current.emit('function-call-result', {
                     callId,
                     sessionId,
-                    functionName: functionName,
+                    functionName: 'getPageContent',
                     result: JSON.stringify({
                       error: `Error getting page: ${error}`,
                       success: false
@@ -693,7 +781,7 @@ const useSocket = () => {
                 socketRef.current.emit('function-call-result', {
                   callId,
                   sessionId,
-                  functionName: functionName,
+                  functionName: 'getPageContent',
                   result: JSON.stringify({
                     error: 'PDF document not loaded',
                     success: false
@@ -756,115 +844,6 @@ const useSocket = () => {
     socket.on('audio-state-change', (data) => {
       console.log('[Socket] Audio state change:', data.isPlaying);
       useStore.getState().setIsPlayingAudio(data.isPlaying);
-    });
-    
-    // Add this function to the setupEventHandlers to ensure we catch all audio events
-    socket.on('content-part-audio', (data) => {
-      console.log('[Socket] Received content-part-audio event');
-      
-      if (data && data.audio && data.audio.length > 0) {
-        try {
-          // Convert array to binary data
-          const audioArray = new Uint8Array(data.audio);
-          
-          // Process the audio data using our helper function
-          processBinaryAudioData(audioArray)
-            .then(base64Audio => {
-              // Use our RxJS service to play the audio
-              addAudioChunk(base64Audio);
-              
-              // Update global state
-              useStore.getState().setIsPlayingAudio(true);
-            })
-            .catch(error => {
-              console.error('[Socket] Error processing content part audio data:', error);
-            });
-        } catch (error) {
-          console.error('[Socket] Error handling content-part-audio:', error);
-        }
-      }
-    });
-
-    // Add handling for the realtime audio deltas
-    socket.on('realtime-event', (event) => {
-      // Handle different event types
-      if (event.type === 'voice-message') {
-        // Voice message events from the server
-        if (event.message) {
-          console.log('[Socket] Received voice message from server:', event.message);
-        }
-      } else if (event.type === 'audio.delta' || event.type === 'response.audio.delta') {
-        // Audio received via delta field (supporting both new and old event types)
-        console.log('[Socket] Received audio delta event');
-        
-        // Handle string-based delta for older format
-        if (event.delta && typeof event.delta === 'string' && event.delta.length > 0) {
-          console.log('[Socket] Processing string-based audio delta');
-          // Use directly if it's already a string (likely base64)
-          addAudioChunk(event.delta);
-          useStore.getState().setIsPlayingAudio(true);
-        }
-        // Handle array-based delta for newer format
-        else if (event.delta && event.delta.audio && event.delta.audio.length > 0) {
-          try {
-            // Convert array to binary data
-            const audioArray = new Uint8Array(event.delta.audio);
-            
-            // Process the audio data using our helper function
-            processBinaryAudioData(audioArray)
-              .then(base64Audio => {
-                // Use our RxJS service to play the audio
-                addAudioChunk(base64Audio);
-                
-                // Update global state
-                useStore.getState().setIsPlayingAudio(true);
-              })
-              .catch(error => {
-                console.error('[Socket] Error processing audio delta data:', error);
-              });
-          } catch (error) {
-            console.error('[Socket] Error handling audio.delta event:', error);
-          }
-        }
-      } else if (event.type === 'audio' && event.data?.audio) {
-        console.log('[Socket] Received audio event');
-        
-        // Handle direct audio data 
-        if (typeof event.data.audio === 'string') {
-          // If it's already a string (likely base64), use it directly
-          addAudioChunk(event.data.audio);
-          useStore.getState().setIsPlayingAudio(true);
-        } else if (Array.isArray(event.data.audio)) {
-          try {
-            // Convert array to binary data
-            const audioArray = new Uint8Array(event.data.audio);
-            
-            // Process the audio data using our helper function
-            processBinaryAudioData(audioArray)
-              .then(base64Audio => {
-                // Use our RxJS service to play the audio
-                addAudioChunk(base64Audio);
-                
-                // Update global state
-                useStore.getState().setIsPlayingAudio(true);
-              })
-              .catch(error => {
-                console.error('[Socket] Error processing audio event data:', error);
-              });
-          } catch (error) {
-            console.error('[Socket] Error handling audio event:', error);
-          }
-        }
-      } else if (event.type === 'done' || event.type === 'response.audio.done') {
-        // Audio streaming is complete (supporting both new and old event types)
-        console.log('[Socket] Received done event for realtime audio');
-        useStore.getState().setIsPlayingAudio(false);
-        completeAudioStream();
-        
-        // Reset processing states
-        setIsProcessing(false);
-        setIsProcessingPage(false);
-      }
     });
     
     console.log('[Socket] Event handlers set up successfully');
@@ -946,31 +925,32 @@ const useSocket = () => {
       return false;
     }
 
-    // Check if this is a narration request
+    // Check if we're already processing and not a narration request
+    const audioState = useStore.getState().audioState;
     const isNarrationRequest = text.includes('get_current_page_content') || text.includes('narrate page');
     
-    // For non-narration requests, check if we're already processing a response
-    if (!isNarrationRequest && useStore.getState().audioState.isProcessing) {
+    // Only block non-narration requests if we're processing a response
+    if (audioState.isProcessing && !isNarrationRequest) {
       console.error('[Socket] Already processing a response, cannot send new text input');
       return false;
     }
     
-    // For narration requests, check if voice recording is active (not just processing)
-    if (isNarrationRequest && useStore.getState().audioState.isRecording) {
-      console.error('[Socket] Cannot start narration while voice recording is active');
+    // For narration requests, don't start a new one if we're already processing
+    if (isNarrationRequest && (audioState.isProcessing || audioState.isRecording)) {
+      console.error('[Socket] Cannot start narration while voice chat is active');
       return false;
     }
 
     try {
       console.log('[Socket] Sending text input:', text);
       
+      // Always set processing state first
+      setIsProcessing(true);
+      
       // If this appears to be a narration request, set processing page state
       if (isNarrationRequest) {
         console.log('[Socket] Detected narration request, setting processing page state');
         setIsProcessingPage(true);
-      } else {
-        // For regular text input, set general processing state
-        setIsProcessing(true);
       }
       
       // Send the message to server
@@ -1048,21 +1028,20 @@ const useSocket = () => {
     if (currentAudio) {
       currentAudio.pause();
       currentAudio.currentTime = 0;
-      currentAudio.src = '';
+      setIsPaused(false);
       setCurrentAudio(null);
+      setIsProcessingPage(false);
+      
+      // Update global audio state
+      useStore.getState().setIsPlayingAudio(false);
+      
+      // Clean up any pending auto-advance timers
+      if (socketRef.current) {
+        socketRef.current.emit('cancel-narration-advance', {
+          reason: 'audio_stopped_manually'
+        });
+      }
     }
-    
-    // Also stop any audio playing via RxJS
-    resetAudioStream();
-    
-    // Clear any pending auto-advance timeout
-    if (autoAdvanceTimeoutRef.current) {
-      clearTimeout(autoAdvanceTimeoutRef.current);
-      autoAdvanceTimeoutRef.current = null;
-    }
-    
-    // Update global state
-    useStore.getState().setIsPlayingAudio(false);
   };
 
   // Return socket and utility functions
@@ -1079,7 +1058,6 @@ const useSocket = () => {
     isPaused,
     currentAudio,
     reconnect: createSocketConnection,
-    setIsProcessingPage,
     // Add a function to manually trigger page advancement
     triggerPageAdvancement: () => {
       const store = useStore.getState();

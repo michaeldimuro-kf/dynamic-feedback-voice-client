@@ -6,7 +6,6 @@ import AudioRecorder from './components/AudioRecorder'
 import { socketEvents } from './constants/socketEvents'
 import useSocket from './hooks/useSocket'
 import useStore from './store/useStore'
-import { useAudioStream } from './hooks/useAudioStream'
 import './App.css'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -22,9 +21,6 @@ function App() {
   const isConnected = useStore(state => state.isConnected);
   const addMessage = useStore(state => state.addMessage);
   const setIsConnected = useStore(state => state.setIsConnected);
-  
-  // Use our audio stream hook with the socket passed in
-  const { playAudioChunk, resetAudioStream } = useAudioStream(socket);
   
   // Initialize socket connection when component mounts
   useEffect(() => {
@@ -64,11 +60,6 @@ function App() {
       if (data?.text) {
         addMessage(data.text, 'bot', false)
       }
-      
-      // If audio data is included, stream it using our RxJS service
-      if (data?.audio && typeof data.audio === 'string') {
-        playAudioChunk(data.audio);
-      }
     })
     
     // Error handling
@@ -82,11 +73,8 @@ function App() {
       socket.off(socketEvents.CONNECT)
       socket.off(socketEvents.MESSAGE)
       socket.off(socketEvents.CONNECT_ERROR)
-      
-      // Clean up audio stream
-      resetAudioStream();
     }
-  }, [socket, addMessage, setIsConnected, playAudioChunk, resetAudioStream])
+  }, [socket, addMessage, setIsConnected])
   
   return (
     <div className="flex flex-col min-h-screen max-h-screen bg-neutral-50 text-neutral-800">

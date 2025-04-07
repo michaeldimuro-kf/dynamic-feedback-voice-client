@@ -5,7 +5,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import AudioPlaybackIndicator from './AudioPlaybackIndicator';
 import '../styles/Chat.css';
 
 // @ts-ignore
@@ -96,9 +95,6 @@ const Chat = ({ showHeader = false }: ChatProps) => {
             <p>Your transcriptions will appear here</p>
           </div>
         )}
-        
-        {/* Audio playback indicator */}
-        <AudioPlaybackIndicator />
         
         {messages.map((message: Message) => (
           <div 

@@ -1,18 +1,13 @@
-import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
-import { Document, Page, pdfjs } from 'react-pdf';
-import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
-import 'react-pdf/dist/esm/Page/TextLayer.css';
-import { FaChevronLeft, FaChevronRight, FaUpload, FaVolumeUp, FaVolumeMute, FaPause, FaPlay } from 'react-icons/fa';
+import { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
 import useStore from '../store/useStore';
+import * as pdfjsLib from 'pdfjs-dist';
+// Import the worker directly (Vite will handle this correctly)
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import useSocket from '../hooks/useSocket';
 import useRealtimeVoiceChat from '../hooks/useRealtimeVoiceChat';
-import { useAudioStream } from '../hooks/useAudioStream';
-import AudioPlaybackIndicator from './AudioPlaybackIndicator';
-import toast from 'react-hot-toast';
 
-// Set the worker to use the local file we copied to the public directory
-// This avoids CORS issues completely
-pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+// Set the worker explicitly from the imported module
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const PDFViewer = () => {
   // Get PDF state from global store
@@ -27,28 +22,16 @@ const PDFViewer = () => {
     audioState,
     setIsNarrating,
     setNarrationCurrentPage,
-    setIsNarrationPaused,
-    pdfContent
+    setIsNarrationPaused
   } = useStore();
 
-  // Use Socket hook
+  // Get socket functionality for narration - call hook ONLY at top level
   const {
     sendTextInput,
     stopAudio,
-    isProcessingPage: socketIsProcessingPage,
-    currentAudio,
-    resumeAudio,
-    socket
+    isProcessingPage,
+    currentAudio
   } = useSocket();
-
-  // Use our enhanced RxJS audio streaming service with socket passed in
-  const { 
-    stopAudio: stopRxJSAudio, 
-    resetAudio, 
-    requestNarration,
-    isStreaming,
-    isPlaying
-  } = useAudioStream(socket);
 
   // Local state
   const [pdfError, setPdfError] = useState<string | null>(null);
@@ -56,12 +39,6 @@ const PDFViewer = () => {
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [hasFixedFirstPage, setHasFixedFirstPage] = useState<boolean>(false);
   const [lastNarratedPage, setLastNarratedPage] = useState<number>(0);
-  const [numPages, setNumPages] = useState<number>(0);
-  const [scale, setScale] = useState<number>(1.0);
-  const [pdf, setPdf] = useState<any>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const pdfContainerRef = useRef<HTMLDivElement>(null);
-  const narrationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Create canvas ref
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,131 +46,126 @@ const PDFViewer = () => {
 
   // Start narration of the PDF
   const startNarration = async () => {
+    console.log("Starting Narration");
+    
+    // First, check if the voice chat system is already processing or recording
+    const audioState = useStore.getState().audioState;
+    if (audioState.isProcessing || audioState.isRecording) {
+      console.error("[PDFViewer] Cannot start narration while voice chat is active");
+      // Show an error or notification to the user here if needed
+      return;
+    }
+    
+    // First, stop any existing audio and processing
+    if (currentAudio) {
+      console.log("[PDFViewer] Stopping any existing audio before starting new narration");
+      stopAudio();
+    }
+    
+    // Unlock audio - try multiple approaches for different browsers
     try {
-      // Only proceed if we have a PDF document and we're not already processing
-      if (!pdfState.pdfDoc || socketIsProcessingPage) {
-        console.log("[PDFViewer] Cannot start narration: No PDF document or socket is busy");
-        return;
+      console.log("[PDFViewer] Attempting to unlock audio context...");
+      
+      // Method 1: Standard AudioContext
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      
+      // Method 2: Oscillator for Chrome/Safari
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 0.01; // Very quiet
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.start();
+      oscillator.stop(audioContext.currentTime + 0.001);
+      
+      // Method 3: Silent audio element for iOS
+      const silentAudio = new Audio();
+      silentAudio.src = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV6urq6urq6urq6urq6urq6urq6urq6v////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAASDs90hvAAAAAAAAAAAAAAAAAAAA//MUZAAAAAGkAAAAAAAAA0gAAAAATEFN//MUZAMAAAGkAAAAAAAAA0gAAAAARTMu//MUZAYAAAGkAAAAAAAAA0gAAAAAOTku//MUZAkAAAGkAAAAAAAAA0gAAAAANVVV";
+      const silentPlayPromise = silentAudio.play();
+      if (silentPlayPromise) {
+        silentPlayPromise.catch(err => {
+          console.log("[PDFViewer] Silent audio plaback failed:", err);
+        });
       }
       
-      const currentPageNum = pdfState.pageNum;
-      
-      // Prevent narrating the current page again if it's already narrating
-      if (audioState.isNarrating && 
-           !audioState.isNarrationPaused && 
-           audioState.narrationCurrentPage === currentPageNum) {
-        console.log('[PDFViewer] Already narrating this page');
-        return;
+      console.log("[PDFViewer] Audio context unlocked");
+    } catch (err) {
+      console.error("[PDFViewer] Error unlocking audio:", err);
+      // Continue even if this fails - the audio handler will try again
+    }
+    
+    // Update global narration state BEFORE sending request
+    setIsNarrating(true);
+    setIsNarrationPaused(false);
+    
+    // Get the LATEST page number from the store to ensure we're using the current page
+    // This is more reliable than using the local state which might be stale
+    const store = useStore.getState();
+    const currentPage = store.pdfState.pageNum;
+    
+    console.log(`[PDFViewer] Starting narration for current page: ${currentPage}`);
+    
+    // Ensure narration current page matches PDF page
+    setNarrationCurrentPage(currentPage);
+    
+    // Update last narrated page state to prevent duplicate narration
+    setLastNarratedPage(currentPage);
+    
+    // Try to extract the actual text content from the current page
+    let pageText = "";
+    try {
+      if (pdfState.pdfDoc) {
+        console.log(`[PDFViewer] Extracting text from PDF page ${currentPage}`);
+        const page = await pdfState.pdfDoc.getPage(currentPage);
+        const textContent = await page.getTextContent();
+        pageText = textContent.items.map((item: any) => item.str).join(' ');
+        console.log(`[PDFViewer] Extracted ${pageText.length} characters of text`);
       }
+    } catch (err) {
+      console.error("[PDFViewer] Error extracting text from PDF:", err);
+      pageText = `Content from page ${currentPage}`;
+    }
+    
+    // Send narration request - try both approaches
+    console.log(`[PDFViewer] Sending narration request for page ${currentPage}`);
+    
+    // Approach 1: Use a clear prompt that mentions get_current_page_content
+    const success = sendTextInput(
+      `Using the function get_current_page_content, summarize and narrate page ${currentPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
+    );
+    
+    if (!success) {
+      console.error('[PDFViewer] Failed to send first narration request');
       
-      // If we were already narrating, just resume
-      if (audioState.isNarrating && audioState.isNarrationPaused) {
-        console.log('[PDFViewer] Resuming paused narration');
-        resumeAudio();
-        return;
-      }
-      
-      // Set global narration state
-      setIsNarrating(true);
-      setIsNarrationPaused(false);
-      setNarrationCurrentPage(currentPageNum);
-      
-      // Mark this page as processed locally too
-      setLastNarratedPage(currentPageNum);
-      
-      // First, stop any existing audio and processing
-      if (currentAudio) {
-        console.log("[PDFViewer] Stopping any existing audio before starting new narration");
-        stopAudio();
-      }
-      
-      // Also stop any RxJS audio streaming that might be in progress
-      stopRxJSAudio();
-      
-      // Reset any existing audio stream
-      resetAudio();
-      
-      // Check only if we're recording (not if processing)
-      if (audioState.isRecording) {
-        console.error("[PDFViewer] Cannot start narration while voice recording is active");
-        return;
-      }
-      
-      // Try to extract the actual text content from the current page
-      let pageText = "";
-      try {
-        if (pdfState.pdfDoc) {
-          console.log(`[PDFViewer] Extracting text from PDF page ${currentPageNum}`);
-          const page = await pdfState.pdfDoc.getPage(currentPageNum);
-          const textContent = await page.getTextContent();
-          pageText = textContent.items.map((item: any) => item.str).join(' ');
-          console.log(`[PDFViewer] Extracted ${pageText.length} characters of text`);
-        }
-      } catch (err) {
-        console.error("[PDFViewer] Error extracting text from PDF:", err);
-        pageText = `Content from page ${currentPageNum}`;
-      }
-      
-      // First try using our RxJS-based narration approach
-      console.log('[PDFViewer] Attempting narration using RxJS audio streaming');
-      
-      // Try to use the direct narration approach with our enhanced audio stream hook
-      const narrationSuccess = requestNarration(pageText, {
-        pageNumber: currentPageNum, 
-        title: `Page ${currentPageNum}`
-      });
-      
-      if (!narrationSuccess) {
-        console.log('[PDFViewer] RxJS narration failed, falling back to socket approach');
-        
-        // Fall back to the original approach, but with more detailed prompt
-        const socketSuccess = sendTextInput(
-          `Using the function get_current_page_content, summarize and narrate page ${currentPageNum} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
-        );
-        
-        if (!socketSuccess) {
-          console.error('[PDFViewer] Failed to send narration request via socket as well');
-          
-          // Try a direct approach with the content included
-          setTimeout(() => {
-            console.log('[PDFViewer] Trying alternate narration approach with content');
-            sendTextInput(
-              `Please narrate this content from page ${currentPageNum}: "${pageText.substring(0, 800)}..." Provide an audio narration summarizing this content in a clear, engaging way.`
-            );
-          }, 1000);
-        }
-      }
-      
-      // Set a backup timer in case we don't get a response from either approach
+      // Try a more direct approach with the content included
       setTimeout(() => {
-        const store = useStore.getState();
-        // Check if we're still narrating and no audio is playing
-        if (store.audioState.isNarrating && 
-            !store.audioState.isNarrationPaused && 
-            !store.audioState.isPlayingAudio &&
-            !isStreaming && 
-            !isPlaying) {
-          console.log('[PDFViewer] No audio response detected, trying final fallback approach');
-          // Send a much simpler, direct narration request
+        console.log('[PDFViewer] Trying alternate narration approach');
+        sendTextInput(
+          `Please narrate the following content from page ${currentPage}: ${pageText.substring(0, 1000)}... Summarize this content in a clear, engaging way, speaking directly to me.`
+        );
+      }, 1000);
+      
+    } else {
+      // Backup approach if the first didn't produce audio
+      setTimeout(() => {
+        // Check if we're still waiting for audio
+        if (useStore.getState().audioState.isNarrating && !useStore.getState().audioState.isPlayingAudio) {
+          console.log('[PDFViewer] No audio response yet, trying alternate approach');
+          
+          // Try another text input without the function call
           sendTextInput(
-            `Narrate the following text with audio: "${pageText.substring(0, 800)}..."`
+            `Please narrate and summarize the content of page ${currentPage} in a clear, engaging way.`
           );
         }
-      }, 5000);
-    } catch (error) {
-      console.error("Error starting narration:", error);
+      }, 3000);
     }
   };
 
   // Stop narration
   const stopNarration = () => {
-    // Update global narration state
     setIsNarrating(false);
     setIsNarrationPaused(false);
-    
-    // Stop any audio playback both in our old system and new RxJS system
     stopAudio();
-    stopRxJSAudio();
   };
 
   // Load a PDF from a URL
@@ -203,7 +175,7 @@ const PDFViewer = () => {
     
     try {
       // Load the PDF document
-      const loadingTask = pdfjs.getDocument(url);
+      const loadingTask = pdfjsLib.getDocument(url);
       const pdfDoc = await loadingTask.promise;
       
       // Update global state with PDF document
@@ -238,8 +210,8 @@ const PDFViewer = () => {
       setLoadState('loading');
       console.log("Attempting to load default PDF");
       
-      // Try loading the PDF directly from file - updated path
-      const directUrl = `/hm.pdf?v=${Date.now()}`;
+      // Try loading the PDF directly from file
+      const directUrl = `/files/hm.pdf?v=${Date.now()}`;
       console.log("Attempting to fetch PDF from:", directUrl);
       
       try {
@@ -262,7 +234,7 @@ const PDFViewer = () => {
           };
           
           console.log("Creating PDF document from data");
-          const pdfDoc = await pdfjs.getDocument(loadingOptions).promise;
+          const pdfDoc = await pdfjsLib.getDocument(loadingOptions).promise;
           console.log("PDF document created successfully with", pdfDoc.numPages, "pages");
           
           setPDFDoc(pdfDoc);
@@ -298,7 +270,7 @@ const PDFViewer = () => {
               disableRange: false,
             };
             
-            const pdfDoc = await pdfjs.getDocument(loadingOptions).promise;
+            const pdfDoc = await pdfjsLib.getDocument(loadingOptions).promise;
             setPDFDoc(pdfDoc);
             setPageCount(pdfDoc.numPages);
             setTimeout(() => { setPageNum(1); }, 100);
@@ -642,7 +614,7 @@ const PDFViewer = () => {
     if (audioState.isNarrating && 
         !audioState.isNarrationPaused && 
         pdfState.pageNum === audioState.narrationCurrentPage && 
-        !socketIsProcessingPage) {
+        !isProcessingPage) {
       console.log(`Auto-triggering narration for page ${pdfState.pageNum}`);
       
       // Stop any current audio processing first
@@ -666,7 +638,7 @@ const PDFViewer = () => {
         );
       }, 100);
     }
-  }, [audioState.isNarrating, audioState.isNarrationPaused, audioState.narrationCurrentPage, pdfState.pageNum, socketIsProcessingPage, sendTextInput, setNarrationCurrentPage, currentAudio, stopAudio]);
+  }, [audioState.isNarrating, audioState.isNarrationPaused, audioState.narrationCurrentPage, pdfState.pageNum, isProcessingPage, sendTextInput, setNarrationCurrentPage, currentAudio, stopAudio]);
 
   // Add an additional effect specifically for handling manual navigation between pages when narration is ON
   useEffect(() => {
@@ -674,7 +646,7 @@ const PDFViewer = () => {
     // and the pdfState.pageNum has changed without audio processing in progress
     if (audioState.isNarrating && 
         !audioState.isNarrationPaused && 
-        !socketIsProcessingPage && 
+        !isProcessingPage && 
         !currentAudio &&
         pdfState.pageNum !== lastNarratedPage) {
       
@@ -692,14 +664,14 @@ const PDFViewer = () => {
         startNarration();
       }, 200);
     }
-  }, [pdfState.pageNum, audioState.isNarrating, audioState.isNarrationPaused, socketIsProcessingPage, currentAudio, lastNarratedPage]);
+  }, [pdfState.pageNum, audioState.isNarrating, audioState.isNarrationPaused, isProcessingPage, currentAudio, lastNarratedPage]);
 
   // Add back the manual page change handler
   useEffect(() => {
     // This effect specifically watches for manual page navigation while narration is active
     if (audioState.isNarrating) {
       // Check if the current page is different from narration current page and we're not already processing
-      if (pdfState.pageNum !== audioState.narrationCurrentPage && !socketIsProcessingPage) {
+      if (pdfState.pageNum !== audioState.narrationCurrentPage && !isProcessingPage) {
         console.log(`[PDFViewer] Manual page change detected during narration - from page ${audioState.narrationCurrentPage} to ${pdfState.pageNum}`);
         
         // Stop any current audio processing first
@@ -718,7 +690,7 @@ const PDFViewer = () => {
           // Add a small delay to ensure the state update happens before sending the request
           setTimeout(() => {
             // Make sure we're not still processing a previous page
-            if (socketIsProcessingPage) {
+            if (isProcessingPage) {
               stopAudio();
             }
             
@@ -732,7 +704,7 @@ const PDFViewer = () => {
         }
       }
     }
-  }, [pdfState.pageNum, audioState.isNarrating, audioState.isNarrationPaused, audioState.narrationCurrentPage, socketIsProcessingPage, setNarrationCurrentPage, sendTextInput, currentAudio, stopAudio]);
+  }, [pdfState.pageNum, audioState.isNarrating, audioState.isNarrationPaused, audioState.narrationCurrentPage, isProcessingPage, setNarrationCurrentPage, sendTextInput, currentAudio, stopAudio]);
 
   return (
     <div className="flex flex-col h-full max-h-full overflow-hidden">
@@ -770,79 +742,43 @@ const PDFViewer = () => {
             </button>
           </div>
           
-          {/* Display narration controls if PDF is loaded */}
+          {/* Narration Button */}
           {pdfState.pdfDoc && (
-            <div className="ml-3">
-              {audioState.isNarrating ? (
-                // Currently narrating - show stop/pause buttons
-                <div className="flex gap-1">
-                  {audioState.isNarrationPaused ? (
-                    // Resume button (play icon)
-                    <button 
-                      onClick={resumeAudio}
-                      className="p-1.5 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-                      aria-label="Resume narration"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polygon points="5 3 19 12 5 21 5 3"/>
-                      </svg>
-                    </button>
-                  ) : (
-                    // Pause button
-                    <button 
-                      onClick={stopAudio} 
-                      className="p-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                      aria-label="Pause narration"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="6" y="4" width="4" height="16"/>
-                        <rect x="14" y="4" width="4" height="16"/>
-                      </svg>
-                    </button>
-                  )}
-                  
-                  {/* Stop button */}
-                  <button 
-                    onClick={stopNarration}
-                    className="p-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
-                    aria-label="Stop narration"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="6" y="6" width="12" height="12"/>
-                    </svg>
-                  </button>
-                </div>
-              ) : (
-                // Start narration button
-                <button 
-                  onClick={startNarration}
-                  className="flex items-center gap-1.5 p-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                  aria-label="Narrate page"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-                  </svg>
-                  <span className="text-sm font-medium">Narrate</span>
-                </button>
-              )}
-            </div>
+            !audioState.isNarrating ? (
+              <button 
+                className="inline-flex items-center gap-2 px-3 py-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                onClick={startNarration}
+                disabled={isProcessingPage}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                <span>Narrate</span>
+              </button>
+            ) : (
+              <button 
+                className="inline-flex items-center gap-2 px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                onClick={stopNarration}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                </svg>
+                <span>Stop</span>
+              </button>
+            )
           )}
         </div>
       </div>
       
-      {/* Main PDF Viewer Area */}
-      <div className="flex-1 overflow-auto bg-neutral-100" ref={containerRef}>
-        {/* Canvas for PDF rendering */}
-        <div className="flex justify-center p-4">
-          <canvas 
-            ref={canvasRef} 
-            className="shadow-lg bg-white"
-          />
-        </div>
-        
-        {/* Loading state */}
+      {/* PDF Content Area */}
+      <div 
+        ref={containerRef}
+        className="flex-1 flex flex-col items-stretch justify-start bg-white md:bg-neutral-50 overflow-hidden"
+        style={{ 
+          minHeight: '300px',
+          height: 'calc(100% - 12px)'
+        }}
+      >
         {loadState === 'loading' && (
           <div className="flex flex-col items-center justify-center h-full text-neutral-500">
             <div className="w-10 h-10 border-4 border-neutral-300 border-t-primary-500 rounded-full animate-spin mb-3"></div>
@@ -871,10 +807,41 @@ const PDFViewer = () => {
             </div>
           </div>
         )}
+        
+        {loadState === 'success' && (
+          <div className="pdf-container w-full h-full flex items-center justify-center py-1">
+            <canvas 
+              ref={canvasRef} 
+              className="pdf-canvas md:max-w-[85%] lg:max-w-[75%]"
+              style={{ 
+                display: 'block',
+                maxHeight: '100%',
+                objectFit: 'contain'
+              }}
+            ></canvas>
+          </div>
+        )}
+        
+        {loadState === 'idle' && !pdfState.pdfDoc && (
+          <div className="flex items-center justify-center h-full">
+            <div className="bg-white p-6 rounded-xl shadow-card max-w-md text-center">
+              <div className="text-primary-500 mb-3">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                  <polyline points="10 9 9 9 8 9"/>
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold mb-2">No Document Loaded</h3>
+              <p className="text-neutral-600 mb-4">
+                Please wait while we load the default document, or select a PDF file to upload.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
-      
-      {/* Add the AudioPlaybackIndicator component */}
-      <AudioPlaybackIndicator />
     </div>
   );
 };
