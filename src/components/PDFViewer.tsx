@@ -120,7 +120,7 @@ const PDFViewer = () => {
     console.log(`[PDFViewer] Sending narration request for page ${currentPage}`);
     
     const success = sendTextInput(
-      `Using the function get_current_page_content, summarize and narrate page ${currentPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content.`
+      `Using the function get_current_page_content, summarize and narrate page ${currentPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
     );
     
     if (!success) {
@@ -129,7 +129,7 @@ const PDFViewer = () => {
       setTimeout(() => {
         console.log('[PDFViewer] Trying alternate narration approach');
         sendTextInput(
-          `Please narrate the following content from page ${currentPage}: ${pageText.substring(0, 1000)}... Summarize this content in a clear, engaging way.`
+          `Using the function get_current_page_content, summarize and narrate page ${currentPage} of this document in a clear, engaging way. Speak directly to me as if you're explaining the content. DO NOT reference the document itself by saying phrases like "this document shows" or "the content mentions." Just present the information naturally.`
         );
       }, 1000);
     }
